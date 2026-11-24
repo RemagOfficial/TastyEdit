@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <!-- The product is TastyEdit (S-D10 rename). Only the executable and its file properties carry
+         that name: the project folder, RootNamespace and the solution keep their identifiers, so the
+         documented headless gate commands (dotnet run against this project) still work. -->
+    <AssemblyName>TastyEdit</AssemblyName>
+    <RootNamespace>TastyEditor.App</RootNamespace>
+    <Product>TastyEdit</Product>
+    <AssemblyTitle>TastyEdit</AssemblyTitle>
+    <!-- Beta: the title bar shows this string (MainWindow.BaseTitle), so a bug report names a build. -->
+    <Version>0.9.0-beta</Version>
+    <!-- Explorer / taskbar icon. Regenerate from assets/app-icon.png with tools/make_icon.py; the
+         same file is carried as a WPF resource below so the window title bar uses it too. -->
+    <ApplicationIcon>app.ico</ApplicationIcon>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Resource Include="app.ico" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\TastyEditor.Core\TastyEditor.Core.csproj" />
+  </ItemGroup>
+
+</Project>

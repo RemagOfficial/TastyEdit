@@ -1,0 +1,31 @@
+# Build output — this repo is source-only.
+[Bb]in/
+[Oo]bj/
+publish/
+
+# IDE / OS noise.
+.vs/
+.vscode/
+*.user
+*.suo
+Thumbs.db
+.DS_Store
+
+# Headless gate runs write a log per gate next to the working folder (`_flips.txt`, ...).
+/_*.txt
+/_*.json
+/_*.bin
+*.log
+__pycache__/
+
+# Nothing game-owned belongs in here: no .bin levels, no extracted assets. The editor
+# reads the player's own install; it ships none of it.
+# NOTE: these paths are deliberately anchored with a leading slash. A bare `levels/` rule
+# would also swallow src/TastyEditor.Core/Levels/ on a case-insensitive filesystem (git's
+# core.ignorecase is true on Windows) and silently exclude a third of the codecs.
+/levels/
+/assets/levels/
+/assets/graphics/
+/assets/editabledirect/
+editor_config.json
+*.bin
