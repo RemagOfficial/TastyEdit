@@ -7,8 +7,9 @@ It handles four games in one program: Tasty Planet 2: Back for Seconds, Tasty Bl
 Forever and Tasty Planet Final Bite. You point it at a level file and it works out which game it
 belongs to.
 
-> **This is a beta.** It has been checked against every shipped level of all four games, but it is
-> a brand new editor: keep backups of the levels you change, and tell me what breaks.
+> **This is a beta.** Loading and saving has been checked against every shipped level of all four
+> games, but it is a brand new editor: keep backups of the levels you change, and tell me what
+> breaks.
 
 ---
 
@@ -66,14 +67,15 @@ selected, and each box applies as soon as you change it.
 - **Position, rotation and facing** — including the flip left/right and up/down switches.
 - **The picture it uses** — swap any decoration or entity onto another sprite from the game's own
   art, and change its colour and transparency.
-- **Size, and which level of the file it belongs to.**
+- **Size, and which goal of the level it belongs to.**
 - **Walls, areas and water** — their shapes, and the behaviour settings the game reads from them.
 - **Entities** — their type and the behaviour data behind them. TastyEdit only offers entity types
   your game actually knows about; an unknown one is silently dropped by the game when it loads the
   level, so the editor won't let you write one by accident.
 - **Add and remove things** — copy, paste, duplicate, delete, and place brand-new entities.
-- **Compare against another level** — load a second level faintly behind the one you're working on
-  (`Multilevel / Goals…` and the reference view) so you can line things up.
+- **Compare against another level** — `Load onion-skin…` draws a second level faintly behind the one
+  you're working on so you can line things up, and `Multilevel / Goals…` shows how the file's goals
+  are put together.
 
 Anything a level file holds that the editor can't faithfully write back is simply not offered,
 rather than being offered and quietly breaking the file.
@@ -92,9 +94,9 @@ Two promises the editor checks constantly while it runs:
 
 ## Good to know
 
-- **Biggest levels.** Zoomed way out on a huge level, everything can be drawn as tiny sprites
-  instead of pictures. `View ▸ Always draw sprites` is on by default; turn it off if a very dense
-  level starts feeling sluggish.
+- **Zoomed way out.** Objects shrink to a couple of pixels across. `View ▸ Always draw sprites` (on
+  by default) draws their real artwork whatever the size; turn it off to fall back to plain markers,
+  which is lighter on huge, dense levels.
 - **Everything looks like X marks?** Your level isn't inside its game folder, so the editor can't
   find the game's art. Open the file from the game's own folder and the sprites come back. (Editing
   still works either way.)
