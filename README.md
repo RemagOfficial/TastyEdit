@@ -132,3 +132,16 @@ are used).
 
 TastyEdit is a fan tool for games you own. It contains no game content and is not affiliated
 with or endorsed by the game's rights holder.
+
+## License
+
+GPL-3.0, see [LICENSE](LICENSE).
+
+Copyright © 2026 RemagOfficial
+
+TastyEdit is free software: you can redistribute it and/or modify it under the terms of the GNU
+General Public License as published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version. It is distributed in the hope that it will be
+useful, but without any warranty; without even the implied warranty of merchantability or
+fitness for a particular purpose — which is also a fair summary of the advice in this file:
+**back up your level files before you save over them.**
