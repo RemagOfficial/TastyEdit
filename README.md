@@ -1,147 +1,152 @@
 # TastyEdit
 
-**Beta 0.9.0** — a native Windows level editor for the Tasty Planet games, written in C#
-(.NET 8 + WPF, no XAML). One program opens all four builds, shows them the way the engine
-shows them, and saves them back in their own binary format.
+A level editor for the **Tasty Planet** games. Open a level, move things around, change how they
+look, save it back — and the game loads your level like it was always there.
 
-| Family | Game | Levels live in |
-|---|---|---|
-| `tp2` | Tasty Planet 2: Back for Seconds | `assets/levels/*.bin` |
-| `tb` | Tasty Blue | `assets/editabledirect/levels/*.bin` |
-| `f4` | Tasty Planet Forever | `assets/editabledirect/levels/*.bin` |
-| `f5` | Tasty Planet Final Bite | `assets/editabledirect/levels/*.bin` |
+It handles four games in one program: Tasty Planet 2: Back for Seconds, Tasty Blue, Tasty Planet
+Forever and Tasty Planet Final Bite. You point it at a level file and it works out which game it
+belongs to.
 
-The game is detected from the file, so it is just *Open level* for all four.
+> **This is a beta.** It has been checked against every shipped level of all four games, but it is
+> a brand new editor: keep backups of the levels you change, and tell me what breaks.
 
-## What you can edit
+---
 
-Everything the level file carries that the engine itself exposes: walls, defined areas,
-paths, decorations, water records and entities are drawn from the games' own sprite tables,
-and each of them can be moved, rotated, re-pointed at another sprite, copied, pasted,
-duplicated, deleted, moved to another level, and undone/redone step by step. New entities
-can be added, and their type is checked against the definitions the shipped game actually
-has (an unknown type parses and then gets dropped in silence by the loader, so the editor
-refuses it rather than writing a level that loses the object in game).
+## Get going
 
-The inspector shows the real fields of whatever is selected — position, rotation, facing
-(**Flip X / Flip Y**), colour and alpha, sprite, dimensions, level, and the format-specific
-ones: water behaviour, TP2 entity fields, multilevel/goal settings and the entity
-behaviour tail. Fields that a record does not have are not faked; nothing is written that
-the codec cannot prove it can read back.
+1. Download **`TastyEdit-0.9.0-beta-win-x64.zip`** from the latest release on this page.
+2. Unzip it into a folder of its own — anywhere is fine, it needs no installation and never writes
+   outside itself except where you tell it to save.
+3. Double-click **`TastyEdit.exe`**.
 
-## Requirements
+Windows will probably interrupt the first run with a blue *"Windows protected your PC"* box, because
+this editor isn't bought from the Store or signed with a certificate. Choose **More info → Run
+anyway**. That warning is normal for hobby tools; if you'd rather not take my word for it, the
+source is right here and you can build it yourself.
 
-- Windows x64 and the **.NET 8 Desktop Runtime** (or the .NET 8 SDK to build).
-- A legally-owned install of at least one of the games. TastyEdit ships **no** game files,
-  art or levels: it reads the artwork out of the install the level came from, which is also
-  how it knows what each object should look like.
+**You need to own the games.** TastyEdit contains no levels, art or models — it borrows the
+graphics from your own game folders to draw the level, which is why it shows real sprites instead of
+boxes.
 
-## Build and run
+## Open a level
 
-```
-dotnet build TastyLevelEditor.sln
-dotnet run --project src/TastyEditor.App
-```
+**File ▸ Open level…** and find your game's level files:
 
-The executable is `src/TastyEditor.App/bin/Debug/net8.0-windows/TastyEdit.exe` — pass a level
-path to open it straight away. For a distributable build:
-
-```
-dotnet publish src/TastyEditor.App -c Release -r win-x64 --self-contained false
-```
-
-## Getting around
-
-| Input | Action |
+| Game | Where the levels live |
 |---|---|
-| Left click / drag | select, then drag the selected element |
-| **Middle mouse drag** | pan the view (from anywhere; it never grabs an element) |
-| Right click | context menu for whatever is under the cursor |
-| Wheel | zoom |
-| `Ctrl+Z` / `Ctrl+Y` | undo / redo (each edit and each drag is its own step) |
-| `View ▸ Fit` | frame the whole level |
-| `View ▸ Always draw sprites` | draw sprites even when they are a few pixels on screen (off = the faster marker view for very large levels) |
+| Tasty Planet 2: Back for Seconds | `<game>\assets\levels\` |
+| Tasty Blue | `<game>\assets\editabledirect\levels\` |
+| Tasty Planet Forever | `<game>\assets\editabledirect\levels\` |
+| Tasty Planet Final Bite | `<game>\assets\editabledirect\levels\` |
 
-`File ▸ Register .bin association` is per-user, reversible from the same menu, and never
-touches anything but your own HKCU registry keys.
+Pick any `.bin`. The whole level appears; **View ▸ Fit** frames it.
 
-## Beta status — what to expect
+Once you've opened a level from a game folder, **File ▸ Open recent** remembers it, and
+*File ▸ Register .bin association* makes double-clicking a level file in Windows open it straight
+in TastyEdit. That registration is yours only, reversible from the same menu, and never touches
+the game.
 
-This is a beta: it is safe on the files it claims to support, and it is honest about the rest.
+## Moving around
 
-- **Always make a copy of a level before saving over it.** Saving in place writes into your
-  game folder; nothing in the editor can restore it for you.
-- Unedited levels save **byte-identical**, and an edit only touches the record it changed —
-  both are machine-checked, see below.
-- Not yet in: creating a level from scratch, the four clip-rectangle integers a decoration
-  record can carry (they are preserved through every edit, just not editable), and per-object
-  render ordering of wall/area/water outlines against markers.
-- Sprites need the game's `assets` tree next to the level; without it the objects still load,
-  edit and save, and draw as position markers instead.
-- The app icon is a placeholder. `assets/app-icon.png` is the source artwork and
-  `python tools/make_icon.py` regenerates `src/TastyEditor.App/app.ico` from it, so swapping
-  the art later is a one-file change.
+| To | Do |
+|---|---|
+| Select something | left-click it |
+| Move it | drag it, or type new numbers in the panel on the right |
+| Pan the view | **hold the middle mouse button and drag** |
+| Zoom | mouse wheel |
+| Copy / paste / duplicate / delete | right-click, or `Ctrl+C` `Ctrl+V` `Ctrl+D` `Del` |
+| Go back | `Ctrl+Z` (and `Ctrl+Y` to come forward). Every change is one step. |
+| Jump to the whole level | `View ▸ Fit` |
 
-## How it stays honest
+The right-hand panel is where the real editing happens: it shows the fields of whatever you have
+selected, and each box applies as soon as you change it.
 
-The format rules were reverse-engineered from the games' own code and data, and every rule in
-the codecs has a headless proof behind it. The same binary that runs the UI runs the gates:
+## What you can change
 
-```
-dotnet run --project src/TastyEditor.App --no-build -- <gate>
-```
+- **Position, rotation and facing** — including the flip left/right and up/down switches.
+- **The picture it uses** — swap any decoration or entity onto another sprite from the game's own
+  art, and change its colour and transparency.
+- **Size, and which level of the file it belongs to.**
+- **Walls, areas and water** — their shapes, and the behaviour settings the game reads from them.
+- **Entities** — their type and the behaviour data behind them. TastyEdit only offers entity types
+  your game actually knows about; an unknown one is silently dropped by the game when it loads the
+  level, so the editor won't let you write one by accident.
+- **Add and remove things** — copy, paste, duplicate, delete, and place brand-new entities.
+- **Compare against another level** — load a second level faintly behind the one you're working on
+  (`Multilevel / Goals…` and the reference view) so you can line things up.
 
-`savecheck` `flips` `decofit` `editops` `decoedit` `decodops` `entops` `entityedit`
-`entitynew` `entitydefs` `entitytypes` `moveops` `undo` `refill` `tp2fields` `tp2reassign`
-`fields` `tailedit` `sprites` `smoke`
+Anything a level file holds that the editor can't faithfully write back is simply not offered,
+rather than being offered and quietly breaking the file.
 
-Each ends in a `GREEN`/`RED` line. They check the two invariants the whole editor rests on:
-**I1** — a level that is opened and saved without edits comes back byte-identical; **I3** — an
-edit changes the bytes of the record it touched and no others. Edits that change a record's
-length (adding a decoration's facing block, renaming an entity) are re-decoded, re-projected
-and restored to the original bytes exactly by undo.
+## Saving
 
-The codec corpus test replays stored golden records against the codecs:
+**File ▸ Save…** writes a copy wherever you choose. **Save (in place)** overwrites the file in your
+game folder — so before you use it, make a copy of the game's `levels` folder. If a level stops
+loading, that copy is the fix.
 
-```
-dotnet run --project tests/TastyEditor.Core.Tests --no-build -- tb f4 f5 tp2
-```
+Two promises the editor checks constantly while it runs:
 
-It needs the golden data (generated from the level files) and reports `skipping` when it is
-absent.
+- a level you opened and saved **without changing anything** comes out byte-for-byte identical to
+  the file you started from;
+- a change only touches the object you changed, never other parts of the file.
 
-## Repository layout
+## Good to know
 
-```
-src/TastyEditor.Core/   formats: codecs, models, the scene projection, every write primitive
-src/TastyEditor.App/    the WPF shell: viewport, inspector, layers dock, asset browser, headless gates
-tests/                  codec corpus harness (console, no package dependencies)
-tools/make_icon.py      app.ico from assets/app-icon.png
-```
+- **Biggest levels.** Zoomed way out on a huge level, everything can be drawn as tiny sprites
+  instead of pictures. `View ▸ Always draw sprites` is on by default; turn it off if a very dense
+  level starts feeling sluggish.
+- **Everything looks like X marks?** Your level isn't inside its game folder, so the editor can't
+  find the game's art. Open the file from the game's own folder and the sprites come back. (Editing
+  still works either way.)
+- **A field you expected isn't there?** Tell me which game, which object and which field — that's
+  the main thing a beta is for.
+- **Nothing leaves your PC.** No internet, no accounts, no statistics. Your recent-files list and
+  view settings live in `%LOCALAPPDATA%\TastyEdit`.
 
-`TastyEditor.App` is the only project that knows about windows and pixels; `TastyEditor.Core`
-holds all format knowledge and never references the UI. The build is fully offline: no NuGet
-packages are required (`global.json` pins the SDK so the cached WindowsDesktop targeting packs
-are used).
+## Not in this version yet
+
+- Making a brand-new level from scratch — you edit copies of levels that already exist.
+- Four rarely-used clip rectangle numbers inside a decoration. They are carried through every edit
+  untouched, you just can't change them yet.
+- Creating whole new games' formats — only the four above.
+
+---
+
+## Building it yourself (optional)
+
+You don't need to — the zip above is the whole program. If you'd rather compile it, or change it,
+[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) covers the build, the self-checks the program runs, and
+how a release is made.
 
 ## Credits
 
-- The first pass at the TP2 format came from the community editor by RemagOfficial:
-  <https://github.com/RemagOfficial/Tasty-Planet-2-level-editor>
-- Format research for all four games was done against the shipped games' own code and data.
+TastyEdit stands on earlier work by three people, and I want to be straight about whose is whose:
 
-TastyEdit is a fan tool for games you own. It contains no game content and is not affiliated
-with or endorsed by the game's rights holder.
+- **RemagOfficial** — the original [Tasty Planet 2 level-parsing Python
+  scripts](https://github.com/RemagOfficial/Tasty-Planet-2-level-editor), which everything here grew
+  out of. That is me, the author of TastyEdit.
+- **LazyRares** — the [Tasty Planet 2 level editor](https://github.com/lazyRares/Tasty-Planet-2-Level-Editor),
+  the well-made one that showed what a proper editor for these games should look like.
+- **Sharkie** — for adding partial Tasty Blue support, which is where the Tasty Blue side of this
+  work started.
+
+The file formats for all four games were then worked out from the games themselves, and every rule
+this editor writes has a check behind it.
+
+TastyEdit is a fan tool for games you own. It ships no game content and is not affiliated with or
+endorsed by the games' rights holder.
 
 ## License
 
-GPL-3.0, see [LICENSE](LICENSE).
+Released under the **GNU GPL v3** — see [LICENSE](LICENSE). You may use, study, change and share
+this program, and any version you distribute must carry the same freedoms.
 
 Copyright © 2026 RemagOfficial
 
-TastyEdit is free software: you can redistribute it and/or modify it under the terms of the GNU
-General Public License as published by the Free Software Foundation, either version 3 of the
-License, or (at your option) any later version. It is distributed in the hope that it will be
-useful, but without any warranty; without even the implied warranty of merchantability or
-fitness for a particular purpose — which is also a fair summary of the advice in this file:
-**back up your level files before you save over them.**
+It comes with no warranty at all, which is also the honest advice in the Saving section above:
+**back up your levels before you overwrite them.**
+
+## Found a problem?
+
+Open an issue here and include: which game, which level, what you did, and what happened instead.
+The title bar shows the version you're running, so a screenshot usually answers half of it.
