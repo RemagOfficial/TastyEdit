@@ -99,16 +99,22 @@ original rather than downscaled from one big bitmap. The project embeds it with 
 
 ## Making a release
 
-1. Set `<Version>` in `src/TastyEditor.App/TastyEditor.App.csproj`, and commit **before** building
-   the artifact — the SDK stamps `InformationalVersion` with the repo commit, and that is how a bug
-   report gets traced to a build.
+1. Set `<Version>` in `src/TastyEditor.App/TastyEditor.App.csproj`, add an entry for it at the top
+   of [CHANGELOG.md](../CHANGELOG.md), and commit **before** building the artifact — the SDK stamps
+   `InformationalVersion` with the repo commit, and that is how a bug report gets traced to a build.
 2. Publish the self-contained build players download (no .NET install needed):
    ```
    dotnet publish src/TastyEditor.App -c Release -r win-x64 --self-contained true -o publish/TastyEdit-<version>
    ```
 3. Zip the folder one level above the repo so it can't be committed:
    `tar.exe -a -cf ..\TastyEdit-<version>-win-x64.zip -C publish TastyEdit-<version>`
-4. `git tag -a v<version>` on the release commit, then push the branch **and the tags**.
+4. `git tag -a v<version>` on the release commit, then push the branch **and the tags**
+   (`git push origin main --follow-tags`).
+5. Create the release on GitHub pointing at that tag, attach the zip, and paste the CHANGELOG entry
+   as the release notes.
+
+A docs-only commit still needs a re-publish before the artifact ships, and `dotnet publish` is
+incremental: pass `-t:Rebuild`, or the copied exe keeps the previous commit's stamp.
 
 The published apphost is unsigned, so first run triggers Windows SmartScreen; the README tells users
 about it rather than having them assume a problem.

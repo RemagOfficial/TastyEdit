@@ -11,6 +11,8 @@ game it came from.
 > four games, but this is a brand new tool. Keep copies of the levels you change, and tell me what
 > goes wrong.
 
+What's in this release is listed in [CHANGELOG.md](CHANGELOG.md).
+
 ---
 
 ## Get started
