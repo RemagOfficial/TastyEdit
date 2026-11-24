@@ -1,154 +1,149 @@
 # TastyEdit
 
-A level editor for the **Tasty Planet** games. Open a level, move things around, change how they
-look, save it back — and the game loads your level like it was always there.
+**A level editor for the Tasty Planet games.** Open a level, click on anything, change where it is
+and what it looks like, save it — then play your level in the game.
 
-It handles four games in one program: Tasty Planet 2: Back for Seconds, Tasty Blue, Tasty Planet
-Forever and Tasty Planet Final Bite. You point it at a level file and it works out which game it
-belongs to.
+One program covers four games: **Tasty Planet 2: Back for Seconds**, **Tasty Blue**, **Tasty Planet
+Forever** and **Tasty Planet Final Bite**. You just pick a level file; TastyEdit works out which
+game it came from.
 
-> **This is a beta.** Loading and saving has been checked against every shipped level of all four
-> games, but it is a brand new editor: keep backups of the levels you change, and tell me what
-> breaks.
+> **It's a beta.** Loading and saving has been checked against every level that shipped with the
+> four games, but this is a brand new tool. Keep copies of the levels you change, and tell me what
+> goes wrong.
 
 ---
 
-## Get going
+## Get started
 
 1. Download **`TastyEdit-0.9.0-beta-win-x64.zip`** from the latest release on this page.
-2. Unzip it into a folder of its own — anywhere is fine, it needs no installation and never writes
-   outside itself except where you tell it to save.
-3. Double-click **`TastyEdit.exe`**.
+2. Unzip it into a folder — anywhere you like. There's nothing to install.
+3. Open **`TastyEdit.exe`**.
 
-Windows will probably interrupt the first run with a blue *"Windows protected your PC"* box, because
-this editor isn't bought from the Store or signed with a certificate. Choose **More info → Run
-anyway**. That warning is normal for hobby tools; if you'd rather not take my word for it, the
-source is right here and you can build it yourself.
+Windows will likely interrupt the first run with a blue *"Windows protected your PC"* window. That
+happens to any small home-made program that hasn't been bought and signed by its publisher. Click
+**More info**, then **Run anyway**.
 
-**You need to own the games.** TastyEdit contains no levels, art or models — it borrows the
-graphics from your own game folders to draw the level, which is why it shows real sprites instead of
-boxes.
+**You need to own the games.** TastyEdit doesn't contain any levels, pictures or models from them —
+it reads the artwork straight from your own game folders, which is why you see the real objects
+instead of coloured boxes.
 
 ## Open a level
 
-**File ▸ Open level…** and find your game's level files:
+**File ▸ Open level…**, then go to your game and pick any `.bin` file:
 
-| Game | Where the levels live |
+| Game | Where its levels are |
 |---|---|
 | Tasty Planet 2: Back for Seconds | `<game>\assets\levels\` |
 | Tasty Blue | `<game>\assets\editabledirect\levels\` |
 | Tasty Planet Forever | `<game>\assets\editabledirect\levels\` |
 | Tasty Planet Final Bite | `<game>\assets\editabledirect\levels\` |
 
-Pick any `.bin`. The whole level appears; **View ▸ Fit** frames it.
+The whole level appears on the left, and **View ▸ Fit** frames it nicely. On the right you can tick
+the separate levels inside the file on and off, so you only see what you're working on; a big area
+or a water region shows as an outline you can grab and reshape.
 
-Once you've opened a level from a game folder, **File ▸ Open recent** remembers it, and
-*File ▸ Register .bin association* makes double-clicking a level file in Windows open it straight
-in TastyEdit. That registration is yours only, reversible from the same menu, and never touches
-the game.
+## Change something
+
+Click any object in the level. The panel on the right fills in with what you can change, and each
+box takes effect as soon as you set it:
+
+- **Where it is** — X and Y, or just drag it.
+- **Which way it faces** — rotation, and the flip left/right and up/down switches.
+- **What it looks like** — its picture, its size, its colour and how see-through it is.
+- **How it behaves** — walls, areas, water and the moving things each bring their own settings:
+  what they do to the player, what they create, how far they grow.
+- **Which of the file's levels it belongs to.**
+
+You can also copy, paste, duplicate and delete things, place brand-new objects, and lay a second
+level faintly behind the one you're editing so you can line the two up.
+
+## Big levels stay quick
+
+Some levels hold thousands of objects. TastyEdit only draws what's on screen, so a huge level is
+still comfortable to move around — and even when you zoom way out, objects keep their real pictures
+instead of turning into tiny crosses. Turn **View ▸ Always draw sprites** off if you'd rather have
+the lighter, simpler view.
 
 ## Moving around
 
-| To | Do |
+| To | Do this |
 |---|---|
-| Select something | left-click it |
-| Move it | drag it, or type new numbers in the panel on the right |
-| Pan the view | **hold the middle mouse button and drag** |
-| Zoom | mouse wheel |
-| Copy / paste / duplicate / delete | right-click, or `Ctrl+C` `Ctrl+V` `Ctrl+D` `Del` |
-| Go back | `Ctrl+Z` (and `Ctrl+Y` to come forward). Every change is one step. |
-| Jump to the whole level | `View ▸ Fit` |
-
-The right-hand panel is where the real editing happens: it shows the fields of whatever you have
-selected, and each box applies as soon as you change it.
-
-## What you can change
-
-- **Position, rotation and facing** — including the flip left/right and up/down switches.
-- **The picture it uses** — swap any decoration or entity onto another sprite from the game's own
-  art, and change its colour and transparency.
-- **Size, and which goal of the level it belongs to.**
-- **Walls, areas and water** — their shapes, and the behaviour settings the game reads from them.
-- **Entities** — their type and the behaviour data behind them. TastyEdit only offers entity types
-  your game actually knows about; an unknown one is silently dropped by the game when it loads the
-  level, so the editor won't let you write one by accident.
-- **Add and remove things** — copy, paste, duplicate, delete, and place brand-new entities.
-- **Compare against another level** — `Load onion-skin…` draws a second level faintly behind the one
-  you're working on so you can line things up, and `Multilevel / Goals…` shows how the file's goals
-  are put together.
-
-Anything a level file holds that the editor can't faithfully write back is simply not offered,
-rather than being offered and quietly breaking the file.
+| Pick something | left-click it |
+| Move it | drag it, or type new numbers on the right |
+| Move the view | **hold the middle mouse button and drag** |
+| Zoom in and out | scroll the mouse wheel |
+| Copy, paste, duplicate, delete | right-click, or `Ctrl+C` `Ctrl+V` `Ctrl+D` `Del` |
+| Undo a mistake | `Ctrl+Z` (`Ctrl+Y` redoes it). Every change is one step back. |
+| See the whole level | `View ▸ Fit` |
 
 ## Saving
 
-**File ▸ Save…** writes a copy wherever you choose. **Save (in place)** overwrites the file in your
-game folder — so before you use it, make a copy of the game's `levels` folder. If a level stops
-loading, that copy is the fix.
+**File ▸ Save…** writes a copy wherever you choose. **Save (in place)** replaces the file inside your
+game folder — so before you do that, copy the game's `levels` folder somewhere safe. If a level ever
+stops loading, put that copy back and you're fine.
 
-Two promises the editor checks constantly while it runs:
+Two things this editor always tries to keep true:
 
-- a level you opened and saved **without changing anything** comes out byte-for-byte identical to
-  the file you started from;
-- a change only touches the object you changed, never other parts of the file.
+- if you open a level and save it **without changing anything**, the file comes out exactly as it
+  went in;
+- when you change one thing, only that thing is touched — the rest of the level is left alone.
+
+If TastyEdit can't save part of a level faithfully, it won't pretend to: you'll hear about it instead
+of getting a broken file.
 
 ## Good to know
 
-- **Zoomed way out.** Objects shrink to a couple of pixels across. `View ▸ Always draw sprites` (on
-  by default) draws their real artwork whatever the size; turn it off to fall back to plain markers,
-  which is lighter on huge, dense levels.
-- **Everything looks like X marks?** Your level isn't inside its game folder, so the editor can't
-  find the game's art. Open the file from the game's own folder and the sprites come back. (Editing
-  still works either way.)
-- **A field you expected isn't there?** Tell me which game, which object and which field — that's
-  the main thing a beta is for.
-- **Nothing leaves your PC.** No internet, no accounts, no statistics. Your recent-files list and
-  view settings live in `%LOCALAPPDATA%\TastyEdit`.
+- **Everything shows as little X marks?** Your level isn't inside its game folder, so TastyEdit
+  can't find the game's artwork. Open the file from the game's own folder and the pictures come
+  back. (Editing works either way.)
+- **A setting you expected isn't there?** Tell me which game, which object and which setting. That's
+  exactly what a beta is for.
+- **Nothing leaves your computer.** No internet, no accounts, no statistics. Your recent-files list
+  and view settings are kept in `%LOCALAPPDATA%\TastyEdit`.
+- **Double-clicking level files.** After **File ▸ Register .bin association**, Windows opens level
+  files straight in TastyEdit. It's your choice, it's reversible from the same menu, and it doesn't
+  touch your game.
 
-## Not in this version yet
+## Not in this version
 
-- Making a brand-new level from scratch — you edit copies of levels that already exist.
-- Four rarely-used clip rectangle numbers inside a decoration. They are carried through every edit
-  untouched, you just can't change them yet.
-- Creating whole new games' formats — only the four above.
+- Making a level from nothing — you edit copies of levels that already exist.
+- Four rarely-used numbers inside a decoration that decide where it gets cut off. They're carried
+  through untouched, you just can't change them yet.
 
----
+## Building it yourself
 
-## Building it yourself (optional)
-
-You don't need to — the zip above is the whole program. If you'd rather compile it, or change it,
-[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) covers the build, the self-checks the program runs, and
-how a release is made.
+You don't need to — the zip above is the whole program. If you'd rather compile it or change it,
+[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) covers the build, the checks the program runs on itself,
+and how a release is made.
 
 ## Credits
 
 TastyEdit stands on earlier work by three people, and I want to be straight about whose is whose:
 
-- **RemagOfficial** — the original [Tasty Planet 2 level-parsing Python
-  scripts](https://github.com/RemagOfficial/Tasty-Planet-2-level-editor), which everything here grew
-  out of. That is me, the author of TastyEdit.
+- **RemagOfficial** — my own first pass at reading Tasty Planet 2 level files, which everything here
+  grew out of.
 - **LazyRares** — the [Tasty Planet 2 level editor](https://github.com/lazyRares/Tasty-Planet-2-Level-Editor),
   the well-made one that showed what a proper editor for these games should look like.
 - **Sharkie** — for adding partial Tasty Blue support, which is where the Tasty Blue side of this
   work started.
 
-The file formats for all four games were then worked out from the games themselves, and every rule
-this editor writes has a check behind it.
+The file formats for all four games were then worked out by opening up the games themselves, and
+every rule this editor writes is checked by a test.
 
-TastyEdit is a fan tool for games you own. It ships no game content and is not affiliated with or
+TastyEdit is a fan tool for games you own. It ships no game content, and it isn't affiliated with or
 endorsed by the games' rights holder.
 
 ## License
 
-Released under the **GNU GPL v3** — see [LICENSE](LICENSE). You may use, study, change and share
-this program, and any version you distribute must carry the same freedoms.
+Released under the **GNU GPL v3** — see [LICENSE](LICENSE). You may use, study, change and share this
+program, and anything you pass on has to carry the same freedoms.
 
 Copyright © 2026 RemagOfficial
 
-It comes with no warranty at all, which is also the honest advice in the Saving section above:
-**back up your levels before you overwrite them.**
+It comes with no warranty at all, which is the same advice as above: **keep copies of your levels
+before you overwrite them.**
 
 ## Found a problem?
 
-Open an issue here and include: which game, which level, what you did, and what happened instead.
-The title bar shows the version you're running, so a screenshot usually answers half of it.
+Open an issue here and say which game, which level, what you did and what happened instead. The
+title bar shows which version you're running, so a screenshot usually answers half of it already.
