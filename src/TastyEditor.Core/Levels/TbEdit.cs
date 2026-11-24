@@ -404,8 +404,8 @@ public static class TbEdit
 
     // ============================================================ deco flip (S-D13) ==
     //
-    // ElementDecoration::writeBinary (_ghidra/out_flip2/a001_writeBinary_007bb624.c) is the
-    // authority for the record's optional 24-byte block. It emits the gate byte as 0 only when
+    // ElementDecoration::writeBinary in the game's own code is the authority for the record's
+    // optional 24-byte block. It emits the gate byte as 0 only when
     // flipX, flipY AND all four clip ints (object +0x44/0x48/0x4c/0x50) are default; otherwise it
     // writes gate 1 followed by writeBoolean(flipX), writeBoolean(flipY) and the four
     // writeInt verbatim. So a flip edit is allowed to change the record's length in BOTH

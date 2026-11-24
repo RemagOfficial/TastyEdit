@@ -116,7 +116,7 @@ public sealed class Tp2SpriteSource : ISpriteSource
         // No alpha editing here. The shipped game composites a transparent tile pixel over
         // whatever is behind it (nodraw), so a deco's feather MUST stay transparent; seamless
         // background coverage comes from the tiles' opaque geometry overlapping, not from
-        // touching alpha. (See MODLOG: mask->texture alpha proven in FUN_00422b70.)
+        // touching alpha (the engine's own mask-to-texture composite is what proved this).
 
         var bmp = BitmapSource.Create(W, H, 96, 96, PixelFormats.Bgra32, null, acc, W * 4);
         bmp.Freeze();
