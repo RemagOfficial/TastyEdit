@@ -26,13 +26,15 @@ string root = Directory.GetCurrentDirectory();
 string goldensDir = Environment.GetEnvironmentVariable("GOLDENS_DIR")
                     ?? Path.Combine(root, "goldens_sub");
 
-var levelsDir = new Dictionary<string, string>
+// Where each game's stock .bin files are, found on this machine rather than assumed: an explicit
+// TPE_LEVELS_<game> wins, otherwise the Steam libraries are searched (see GameInstall).
+var levelsDir = new Dictionary<string, string>();
+foreach (var game in new[] { "tp2", "tb", "f4", "f5" })
 {
-    ["tp2"] = EnvOr("TPE_LEVELS_tp2", @"B:\SteamLibrary\steamapps\common\Tasty Planet Back for Seconds\assets\levels"),
-    ["tb"] = EnvOr("TPE_LEVELS_tb", @"B:\SteamLibrary\steamapps\common\Tasty Blue\assets\editabledirect\levels"),
-    ["f4"] = EnvOr("TPE_LEVELS_f4", @"B:\SteamLibrary\steamapps\common\Tasty Planet Forever\assets\editabledirect\levels"),
-    ["f5"] = EnvOr("TPE_LEVELS_f5", @"B:\SteamLibrary\steamapps\common\Tasty Planet Final Bite\assets\editabledirect\levels"),
-};
+    var found = GameInstall.LevelsDir(game);
+    levelsDir[game] = found ?? "";
+    if (found is null) Console.Error.WriteLine("NOTE " + GameInstall.MissingHint(game));
+}
 
 // The codecs ported so far. Games not yet in the dictionary are reported but do
 // not fail the run, so the harness is usable incrementally across slice 1.
@@ -154,8 +156,6 @@ Console.WriteLine($"C# GOLDEN CHECK: {passed}/{total} levels green"
 foreach (var f in failures.Take(40)) Console.WriteLine("   FAIL " + f);
 Console.WriteLine(failures.Count == 0 && total > 0 ? "CORE CODEC GREEN" : "CORE CODEC RED");
 return failures.Count == 0 && total > 0 ? 0 : 1;
-
-static string EnvOr(string k, string d) => Environment.GetEnvironmentVariable(k) ?? d;
 
 static List<string> CheckOne(string game, string binPath, byte[] data, JsonElement gold)
 {

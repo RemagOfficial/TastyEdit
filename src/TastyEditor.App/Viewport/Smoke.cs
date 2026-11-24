@@ -13,13 +13,32 @@ namespace TastyEditor.App.Viewport;
 /// touches the byte-exact save path.</summary>
 public static class Smoke
 {
-    private static readonly (string Game, string Dir)[] Defaults =
+    // The stock level folders every gate sweeps. Resolved from the machine's own Steam libraries
+    // (or TPE_LEVELS_<GAME>) instead of a fixed path, so the gates run on any install; an
+    // unresolved family keeps an empty directory, which every gate loop skips, and says so.
+    private static readonly string[] Games = { "f5", "f4", "tb", "tp2" };
+    private static readonly (string Game, string Dir)[] Defaults = ResolveDefaults();
+
+    private static (string Game, string Dir)[] ResolveDefaults()
     {
-        ("f5", @"B:\SteamLibrary\steamapps\common\Tasty Planet Final Bite\assets\editabledirect\levels"),
-        ("f4", @"B:\SteamLibrary\steamapps\common\Tasty Planet Forever\assets\editabledirect\levels"),
-        ("tb", @"B:\SteamLibrary\steamapps\common\Tasty Blue\assets\editabledirect\levels"),
-        ("tp2", @"B:\SteamLibrary\steamapps\common\Tasty Planet Back for Seconds\assets\levels"),
-    };
+        var resolved = new (string Game, string Dir)[Games.Length];
+        var missing = new List<string>();
+        for (int i = 0; i < Games.Length; i++)
+        {
+            var dir = GameInstall.LevelsDir(Games[i]);
+            resolved[i] = (Games[i], dir ?? "");
+            if (dir is null) missing.Add(GameInstall.MissingHint(Games[i]));
+        }
+        foreach (var note in missing) Console.WriteLine("NOTE " + note);
+        return resolved;
+    }
+
+    private static string LevelsDirFor(string game) => Defaults.First(d => d.Game == game).Dir;
+
+    /// <summary>Joins onto a resolved levels folder, tolerating the empty string that stands for
+    /// "this game isn't installed here" (the caller's Directory.Exists guard then skips it).</summary>
+    private static string Sub(string dir, string child) =>
+        dir.Length == 0 ? "" : Path.Combine(dir, child);
 
     public static void Run(string[]? paths)
     {
@@ -2803,8 +2822,8 @@ public static class Smoke
 
         var dirs = new (string Game, string Dir)[]
         {
-            ("tb", @"B:\SteamLibrary\steamapps\common\Tasty Blue\assets\editabledirect\levels\multilevels"),
-            ("tp2", @"B:\SteamLibrary\steamapps\common\Tasty Planet Back for Seconds\assets\levels\multilevels"),
+            ("tb", Sub(LevelsDirFor("tb"), "multilevels")),
+            ("tp2", Sub(LevelsDirFor("tp2"), "multilevels")),
         };
         foreach (var (game, dir) in dirs)
         {
