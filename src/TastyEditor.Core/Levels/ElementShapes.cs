@@ -13,9 +13,19 @@ public static class ElementShapes
 
     public static void ReadColour(ByteCursor c) { c.U8(); c.U8(); c.U8(); c.U8(); }
 
+    /// <summary>Whether a ShapeDefs type name denotes the circle shape. Dispatch is on the TYPE,
+    /// not on the spelling the level happened to save: the shipped data writes shape names in lower
+    /// case (`poly`, and `circle` in Forever's mars1_9 / mars1_10) while the decompile names the
+    /// class `Circle`. Comparing case-sensitively sent those two levels down the polygon branch,
+    /// which read a vertex count out of the circle's radius double (0, so an empty shape) and then
+    /// lost the 24 bytes the circle actually occupies — the rest of the layer fell out of step, the
+    /// level could not be framed, and it drew no entities at all.</summary>
+    public static bool IsCircleName(string? name) =>
+        name is not null && name.Equals("Circle", StringComparison.OrdinalIgnoreCase);
+
     private static void ReadShapeBody(ByteCursor c, string name)
     {
-        if (name == "Circle")
+        if (IsCircleName(name))
         {
             c.F64(); c.F64(); c.F64();
         }

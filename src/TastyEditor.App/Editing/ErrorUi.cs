@@ -1,4 +1,5 @@
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Windows;
 
@@ -24,20 +25,46 @@ public static class ErrorUi
         MessageBox.Show(owner, sb.ToString(), title, MessageBoxButton.OK, MessageBoxImage.Error);
     }
 
-    /// <summary>Log a crash to %LOCALAPPDATA%\TastyEdit\crash.log and show the dialog.</summary>
+    /// <summary>Log a crash under %LOCALAPPDATA%\TastyEdit\ — an append-only crash.log plus a
+    /// timestamped file in the crash_reports folder (each report stands alone so a bug report can be
+    /// attached without pasting a whole log) — then show the dialog.</summary>
     public static void Crash(Window? owner, Exception ex)
     {
+        string reportPath = "";
         try
         {
             var dir = Path.Combine(Environment.GetFolderPath(
                 Environment.SpecialFolder.LocalApplicationData), "TastyEdit");
             Directory.CreateDirectory(dir);
+            var stamp = $"{DateTime.Now:yyyyMMdd-HHmmss}";
             File.AppendAllText(Path.Combine(dir, "crash.log"),
                 $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {ex}\n\n");
+            var reports = Path.Combine(dir, "crash_reports");
+            Directory.CreateDirectory(reports);
+            reportPath = Path.Combine(reports, $"crash-{stamp}.txt");
+            File.WriteAllText(reportPath,
+                $"TastyEdit crashed {DateTime.Now:yyyy-MM-dd HH:mm:ss}\n\n{ex}\n");
+            PruneReports(reports, 20);   // keep the newest twenty; disk fill must never be a crash
         }
         catch { /* logging must never be the thing that fails */ }
+        var hint = reportPath.Length > 0
+            ? $"The error was written to a report in the editor's AppData crash_reports folder."
+            : "The error was written to crash.log in the editor's AppData folder.";
         Show(owner ?? new Window { WindowStyle = WindowStyle.None, Width = 0, Height = 0, Visibility = Visibility.Hidden },
-            "Unexpected error", "The error was written to crash.log in the editor's AppData folder.", ex);
+            "Unexpected error", hint, ex);
+    }
+
+    // Leave only the newest <keep> report files in the folder; a stray error here is ignored so
+    // housekeeping can never mask the crash it is tidying up after.
+    private static void PruneReports(string dir, int keep)
+    {
+        try
+        {
+            var files = new DirectoryInfo(dir).GetFiles("crash-*.txt");
+            if (files.Length <= keep) return;
+            foreach (var f in files.OrderByDescending(f => f.LastWriteTimeUtc).Skip(keep)) f.Delete();
+        }
+        catch { }
     }
 
     private static string Hint(Exception ex) => ex switch

@@ -51,6 +51,7 @@ public sealed class AssetBrowserPanel : Grid
 
         foreach (var o in new object[] { "Cells", "Anims" })
             _kind.Items.Add(o);
+        Theme.StyleCombo(_kind);
         _kind.SelectedIndex = 0;
 
         var controls = new DockPanel { LastChildFill = true, Margin = new Thickness(0, 0, 0, 4) };

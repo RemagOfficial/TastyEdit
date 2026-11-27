@@ -393,6 +393,28 @@ public static class TbEdit
         return true;
     }
 
+    /// <summary>The record's two dimension ints (centiunits of world space, the same pair
+    /// <see cref="DecoSize"/> derives its single knob from), or null when unparseable.</summary>
+    public static (int W, int H)? DecoDimsRaw(TbDeco? deco)
+        => deco?.Raw != null && DecoFields(deco.Raw, out _, out int wo, out int ho)
+            ? (ReadI32(deco.Raw, wo), ReadI32(deco.Raw, ho)) : null;
+
+    /// <summary>Free per-axis decoration resize (the viewport's Shift-drag grip): writes both
+    /// dimension ints independently, one per axis — the record genuinely stores two fields, so
+    /// unlike <see cref="SetDecoSize"/> this changes the sprite's aspect. Each axis is clamped to
+    /// a minimum of 1 so an inverted drag can never zero or flip a dimension. Mirrors the
+    /// DimW/DimH sync <see cref="SetDecoSize"/> does.</summary>
+    public static bool SetDecoAxes(TbDeco? deco, double scaleW, double scaleH)
+    {
+        if (deco?.Raw == null || !DecoFields(deco.Raw, out _, out int wo, out int ho)) return false;
+        int nx = Math.Max(1, (int)Math.Round(scaleW * DimBase));
+        int ny = Math.Max(1, (int)Math.Round(scaleH * DimBase));
+        WriteI32(deco.Raw, wo, nx);
+        WriteI32(deco.Raw, ho, ny);
+        deco.DimW = nx; deco.DimH = ny;
+        return true;
+    }
+
     public static bool SetDecoColor(TbDeco? deco, byte r0, byte g0, byte b0, byte a0)
     {
         if (deco?.Raw == null || !DecoFields(deco.Raw, out int co, out _, out _)) return false;

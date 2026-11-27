@@ -412,9 +412,24 @@ public static class ElemEdit
         if (h.Sec is null || !h.Sec.Opaque || h.Sec.Count <= 0) return 0;
         var (heads, ok) = EntityFraming.SplitRecords(h.Sec.Block, 0, h.Sec.Count, h.Lv.Game);
         if (!ok || h.RecIndex < 0 || h.RecIndex >= heads.Count) return 0;
-        int ro = heads[h.RecIndex].XyOff + EntityFraming.Rot;
+        // f4/f5 insert the two extra int32 BEFORE the turn, so the rotation lives at xy_off + Rot + ExtF4F5.
+        int ro = heads[h.RecIndex].XyOff + EntityFraming.Rot + EntityFraming.ExtF4F5;
         if (ro + 4 > h.Sec.Block.Length) return 0;
         return -ReadI32(h.Sec.Block, ro) / 100.0;
+    }
+
+    /// <summary>The record's per-instance flip flag (the first word of the optional box block, the value
+    /// ElementEntity::drawBase uses to negate the authored angle and mirror the sprite) — the same flag the
+    /// projector needs to reproduce the game's facing. Frames the record and reads it off its
+    /// <see cref="EntityFraming.EntDisplay"/>, exactly like the load path.</summary>
+    public static bool EntityFlip(EntityEditHandle h)
+    {
+        if (h.Sec is null || !h.Sec.Opaque || h.Sec.Count <= 0) return false;
+        var (heads, ok) = EntityFraming.SplitRecords(h.Sec.Block, 0, h.Sec.Count, h.Lv.Game);
+        if (!ok || h.RecIndex < 0 || h.RecIndex >= heads.Count) return false;
+        int recEnd = h.RecIndex + 1 < heads.Count ? heads[h.RecIndex + 1].RecStart : h.Sec.Block.Length;
+        var disp = EntityFraming.ReadBody(h.Sec.Block, heads[h.RecIndex].XyOff, EntityFraming.ExtF4F5, recEnd);
+        return disp.Flip;
     }
 
     /// <summary>Set an ElementEngine entity's absolute rotation in degrees (int32 centidegree
@@ -426,7 +441,8 @@ public static class ElemEdit
         var (heads, ok) = EntityFraming.SplitRecords(h.Sec.Block, 0, h.Sec.Count, h.Lv.Game);
         if (!ok || heads.Count != h.Sec.Count) return false;
         if (h.RecIndex < 0 || h.RecIndex >= heads.Count) return false;
-        int ro = heads[h.RecIndex].XyOff + EntityFraming.Rot;
+        // Match the read path: f4/f5 rotation is at xy_off + Rot + ExtF4F5 (see EntityFraming.ReadBody).
+        int ro = heads[h.RecIndex].XyOff + EntityFraming.Rot + EntityFraming.ExtF4F5;
         if (ro + 4 > h.Sec.Block.Length) return false;
         WriteI32(h.Sec.Block, ro, (int)Math.Round(-deg * 100));
         return true;
@@ -654,6 +670,20 @@ public static class ElemEdit
         int ny = (int)Math.Round(nx * aspect);
         WriteI32(rec, wo, nx);
         WriteI32(rec, ho, ny);
+        return true;
+    }
+
+    /// <summary>Free per-axis decoration resize (the viewport's Shift-drag grip): writes both
+    /// <c>dimensions.raw</c> ints independently, one per axis — the record stores two fields, so
+    /// unlike <see cref="SetDecoSize"/> this changes the sprite's aspect. Each axis is clamped to
+    /// a minimum of 1 so an inverted drag can never zero or flip a dimension.</summary>
+    public static bool SetDecoAxes(DecoEditHandle h, double scaleW, double scaleH)
+    {
+        if (h.Sec is null || h.RecIndex < 0 || h.RecIndex >= h.Sec.Records.Count) return false;
+        var rec = h.Sec.Records[h.RecIndex];
+        if (!DecoFields(rec, IsF5(h.Lv), out _, out int wo, out int ho)) return false;
+        WriteI32(rec, wo, Math.Max(1, (int)Math.Round(scaleW * DimBase)));
+        WriteI32(rec, ho, Math.Max(1, (int)Math.Round(scaleH * DimBase)));
         return true;
     }
 

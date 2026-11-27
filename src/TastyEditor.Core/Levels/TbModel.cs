@@ -70,6 +70,7 @@ public sealed class TbEntity
     // span stays the lossless carrier and edits remain gated elsewhere).
     public string? Name;                 // prefab / spawn name (sprite key)
     public int Rotation;                 // raw centidegrees
+    public bool Flip;                  // record's per-instance flip flag (drawBase box word): mirror + negate angle
     public double Mass = 1.0;
     public int Priority;
     public byte[] ColorRgba = new byte[] { 255, 255, 255, 255 };

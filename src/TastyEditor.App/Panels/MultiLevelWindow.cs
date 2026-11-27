@@ -42,7 +42,11 @@ public sealed class MultiLevelWindow : Window
         Width = 960;
         Height = 640;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
-
+        // See NewEntityWindow: a Window subclass misses the implicit WindowStyle, so bind the chrome
+        // to the theme brushes by key or the panel stays white under the light implicit text ink.
+        Theme.Ref(this, Window.BackgroundProperty, Theme.KWindow);
+        Theme.Ref(this, Window.ForegroundProperty, Theme.KText);
+        Theme.StyleCombo(_files);
         var goalPanel = new StackPanel();
         var goals = new ScrollViewer
         {
@@ -61,6 +65,7 @@ public sealed class MultiLevelWindow : Window
         AddCol(gv, "Pos Y", "PosY", 80);
         AddCol(gv, "Trigger", "TriggerArea", 70);
         _list.View = gv;
+        Theme.StyleList(_list, gv);
 
         var ops = new WrapPanel { Margin = new Thickness(0, 6, 0, 6) };
         ops.Children.Add(Button("Add", (_, _) => AddStage()));
@@ -258,21 +263,15 @@ public sealed class MultiLevelWindow : Window
                     if (!ReferencesStage(ml, _stageName)) continue;
                     _byFile[f] = ml;
                     var name = System.IO.Path.GetFileName(f);
-                    var item = new ComboBoxItem { Content = name, Tag = f, ToolTip = f };
-                    _files.Items.Add(item);
+                    _files.Items.Add(name);
                 }
                 catch { /* a stray / unreadable xml in the folder is simply not offered */ }
             }
         }
         if (_files.Items.Count == 0)
-            _files.Items.Add(new ComboBoxItem
-            {
-                Content = _stageName is null
-                    ? "Open a level first, or use “Open other…”"
-                    : $"No multilevel references “{_stageName}” — use “Open other…”",
-                Tag = null,
-                IsEnabled = false,
-            });
+            _files.Items.Add(_stageName is null
+                ? "Open a level first, or use “Open other…”"
+                : $"No multilevel references “{_stageName}” — use “Open other…”");
         _loadingList = false;
         _files.SelectedIndex = 0;
     }
@@ -285,8 +284,19 @@ public sealed class MultiLevelWindow : Window
     private void OnMultilevelSelected()
     {
         if (_loadingList) return;
-        if (_files.SelectedItem is ComboBoxItem { Tag: string path })
+        if (_files.SelectedItem is string sel && PathForName(sel) is string path)
             LoadFile(path, addToList: false);
+    }
+
+    // The dropdown lists bare file names (so the themed string ItemTemplate reaches the closed box);
+    // the full path is recovered from the _byFile cache, keyed by path.
+    private string? PathForName(string? name)
+    {
+        if (name is null) return null;
+        foreach (var k in _byFile.Keys)
+            if (string.Equals(System.IO.Path.GetFileName(k), name, StringComparison.OrdinalIgnoreCase))
+                return k;
+        return null;
     }
 
     /// <summary>Load a multilevel into the editor from the cache (dropdown picks) or fresh from
@@ -321,9 +331,9 @@ public sealed class MultiLevelWindow : Window
         _byFile[path] = ml;
         _loadingList = true;
         var name = System.IO.Path.GetFileName(path);
-        _files.Items.Add(new ComboBoxItem { Content = name, Tag = path, ToolTip = path });
+        _files.Items.Add(name);
         _loadingList = false;
-        if (select) _files.SelectedItem = _files.Items.Cast<ComboBoxItem>().First(i => (string?)i.Tag == path);
+        if (select) _files.SelectedItem = name;
     }
 
     private void SaveFile()

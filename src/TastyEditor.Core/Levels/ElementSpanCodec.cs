@@ -25,7 +25,7 @@ public sealed class ElementSpanCodec
     {
         "f5" => FinalBite,
         "f4" => Forever,
-        _ => throw new ArgumentException($"no raw-span codec for {game}"),
+        _ => throw new ArgumentException($"no packed-section reader is registered for game '{game}'"),
     };
 
     private void WalkRec(ByteCursor c, int si, int cnt)
@@ -46,6 +46,9 @@ public sealed class ElementSpanCodec
         private readonly Dictionary<(int, int, int), bool> _selfval = new();
         private readonly Dictionary<(int, int), (bool Ok, int FirstStart, int LastStart, int TrueFloor)> _anchor = new();
         private readonly Dictionary<(int, int), int> _measured = new();
+        // TPE_DECODE_DIAG=1: narrate the strict walk's rejections. A level that falls through to
+        // the lenient tiling still round-trips, so without this the only clue is a broken viewport.
+        private readonly bool _diag;
         public readonly List<(int Start, int End, int Cnt)> Spans = new();
 
         // Diagnostics (only read when TB_DECODE_DIAG is set): how much work each
@@ -55,6 +58,7 @@ public sealed class ElementSpanCodec
         public Walk(ElementSchema s, byte[] d, int lc, int h0, bool strict, bool front)
         {
             _s = s; _d = d; _n = d.Length; _lc = lc; _h0 = h0; _strict = strict; _front = front;
+            _diag = Environment.GetEnvironmentVariable("TPE_DECODE_DIAG") is not null;
         }
 
         private void WalkRec(ByteCursor c, int si, int cnt)
@@ -161,9 +165,22 @@ public sealed class ElementSpanCodec
                     {
                         WalkRec(c, si, cnt);
                         res = Parse(c.P, nli, nsi);
+                        if (_diag && !res)
+                            Console.Error.WriteLine($"L{li} sec{si} @{o} cnt={cnt}: walked to {c.P}, "
+                                + "rest of the file did not close");
                     }
+                    else if (_diag)
+                        Console.Error.WriteLine($"L{li} sec{si} @{o}: count {cnt} out of range");
                 }
-                catch (StopException) { res = false; }
+                catch (StopException)
+                {
+                    res = false;
+                    // `cnt` died with the try block; the cursor position says how far the grammar got,
+                    // which is the part that identifies the section that is not what it looks like.
+                    if (_diag)
+                        Console.Error.WriteLine($"L{li} sec{si} @{o}: record grammar overran the "
+                            + $"file at {c.P} of {_n}");
+                }
             }
             else
             {
@@ -184,6 +201,18 @@ public sealed class ElementSpanCodec
                         // byte is not a head has no record-exact end at all — give up on the span
                         // instead of scanning the whole file rejecting each candidate.
                         if (canStrict && _front && anchor.FirstStart != start) canStrict = false;
+                        if (_diag && !aok)
+                        {
+                            var (dh, dok) = EntityFraming.SplitBlock(_d, start, cnt, _n);
+                            Console.Error.WriteLine($"entity@{start} cnt={cnt}: head scan to EOF "
+                                + $"ok={dok} heads={dh.Count} (needs {cnt}) -> no strict framing here");
+                        }
+                        else if (_diag && canStrict && _front && anchor.FirstStart != start)
+                            Console.Error.WriteLine($"entity@{start} cnt={cnt}: first head is @{anchor.FirstStart} "
+                                + $"(+{anchor.FirstStart - start}), not the block start -> front pass declines");
+                        else if (_diag && canStrict)
+                            Console.Error.WriteLine($"entity@{start} cnt={cnt}: anchored ok, lastHead={anchor.LastStart} "
+                                + $"floor={anchor.TrueFloor} measured={MeasuredEnd(start, cnt)}");
                     }
                     if (canStrict)
                     {
@@ -215,9 +244,34 @@ public sealed class ElementSpanCodec
                             Spans.RemoveAt(Spans.Count - 1);
                         }
                     }
+                    else if (_strict)
+                    {
+                        // The search found no anchor at all. That is not the same as the block having no
+                        // record-exact end: the search's credibility rule needs a name that looks like a
+                        // prefab, and Forever ships plain words (`h2o`, `bedrock`, `airplanepath1`), so the
+                        // scan can walk a whole entity block without ever firing. The loading rules need no
+                        // scan — they start at a known offset and read `count` records back to back — so
+                        // where they arrive is tried here, and it has to be believed by the rest of the file:
+                        // the deco/water section must parse at that end and the walk must close on it.
+                        // Only reached when the search failed, so no level that already framed
+                        // record-exactly gets a different answer.
+                        int me = MeasuredEnd(start, cnt);
+                        if (_diag)
+                            Console.Error.WriteLine($"entity@{start} cnt={cnt}: unanchored, measured end "
+                                + $"{(me > 0 ? me.ToString() : "unknown")} of {_n}"
+                                + $"  deco/water@{me}={(me > 0 && TryDecoWaterAt(me) is not null)}");
+                        if (me > start && me < _n && TryDecoWaterAt(me) is not null)
+                        {
+                            Spans.Add((start, me, cnt));
+                            if (Parse(me, nli, nsi)) res = true;
+                            else Spans.RemoveAt(Spans.Count - 1);
+                        }
+                    }
                 }
             }
             _memo[key] = res;
+            if (_diag && !res && si == _s.Entity && _strict)
+                Console.Error.WriteLine($"entity@{o}: strict walk found no end that closes the rest of the file");
             return res;
         }
     }
@@ -258,25 +312,48 @@ public sealed class ElementSpanCodec
         // Three passes, best framing first: record-exact at both ends, then the count-exact strict
         // pass, then the lenient first-valid pick. A level the strict-front pass cannot tile (a block
         // whose first byte genuinely is not a head) keeps the framing it had instead of losing it.
+        //
+        // Which pass won is recorded on the model, because the three answers are not equally
+        // trustworthy and I1 cannot tell them apart: every one of them re-emits the file byte-for-
+        // byte, since the opaque block absorbs whatever the walk sliced. The lenient pass in
+        // particular takes the first tiling that closes, which can land a section header in the
+        // middle of a record. `FramingAuthority` is what the corpus gate reads to say whether a
+        // level was actually framed or merely closed.
+        var authority = FramingAuthority.RecordExactBothEnds;
+        // Why a better pass lost is the whole story of a mis-framed level, and it is otherwise
+        // invisible: a lenient fallback still round-trips byte-for-byte, so the only symptom is a
+        // viewport full of nonsense. TPE_DECODE_DIAG=1 puts the pass-by-pass reason on stderr.
+        bool diag = Environment.GetEnvironmentVariable("TPE_DECODE_DIAG") is not null;
         foreach (var (strict, front) in new[] { (true, true), (true, false) })
             try
             {
                 var (ok, sp) = FullWalk(d, strict, front);
-                if (ok) { spans = sp; break; }
+                if (ok) { spans = sp; authority = front ? FramingAuthority.RecordExactBothEnds
+                                                         : FramingAuthority.RecordExactCount; break; }
             }
-            catch (Exception) { /* try the next pass */ }
+            catch (Exception ex)
+            {
+                if (diag)
+                    Console.Error.WriteLine($"walk(strict:{strict},front:{front}) THREW "
+                                            + $"{ex.GetType().Name}: {ex.Message}");
+            }
 
         if (spans is null)
         {
+            if (diag)
+                Console.Error.WriteLine($"both strict passes declined; taking the lenient tiling "
+                                        + $"of {d.Length} bytes");
             var (ok, lenient) = FullWalk(d, false);
             if (!ok) throw new InvalidOperationException("level does not tile to EOF");
             spans = lenient;
+            authority = FramingAuthority.Lenient;
         }
 
         var entEnds = new Dictionary<int, int>();
         foreach (var (start, end, _) in spans) entEnds[start] = end;
 
-        var lv = new ElementLevel { Game = _s.Game, SectionsPerLayer = _s.Sections };
+        var lv = new ElementLevel { Game = _s.Game, SectionsPerLayer = _s.Sections,
+                                    FramingAuthority = authority };
         var c = new ByteCursor(d);
         lv.Dummy = c.I32();
         int tc = c.I32();

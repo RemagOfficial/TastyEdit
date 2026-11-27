@@ -35,6 +35,10 @@ public sealed class Tp2SpriteSource : ISpriteSource
         _graphicsDir = res.Root.GraphicsDir;
     }
 
+    /// <summary>The resolver behind this pixel source, so the viewport can ask the shipped tables how
+    /// much of an entity's own nat box is ink (<c>coverage</c>) when it turns mass into a render scale.</summary>
+    public Tp2SpriteResolver Resolver => _res;
+
     public bool TryGet(string rawName, int frame, byte[]? tint, out BitmapSource image,
         out int w, out int h, out double pivotX, out double pivotY, out double opacity)
         => Get(rawName, frame, tint, hard: false, out image, out w, out h, out pivotX, out pivotY, out opacity);
@@ -96,6 +100,7 @@ public sealed class Tp2SpriteSource : ISpriteSource
     // ---- plan execution ----
     private Built? Build(Tp2SpritePlan plan, bool hard = false)
     {
+        if (plan.IsSkeletal) return BuildAssembly(plan);
         byte[]? acc = null; int W = 0, H = 0;
         foreach (var op in plan.Ops)
         {
@@ -121,6 +126,104 @@ public sealed class Tp2SpriteSource : ISpriteSource
         var bmp = BitmapSource.Create(W, H, 96, 96, PixelFormats.Bgra32, null, acc, W * 4);
         bmp.Freeze();
         return new Built(bmp, W, H, plan.Pivot.X, plan.Pivot.Y);
+    }
+
+    // Skeletal assembly: composite the character's parts onto a shared canvas the resolver sized
+    // (plan.CanvasW/H, entity origin at OriginX/Y). Each part is its own cell canvas (crop + crop
+    // offset via CropCell), placed so its animdef pivot lands at (origin + offset) and rotated about
+    // that pivot, scaled and flipped — nearest-neighbour (game is pixel art), per-part opacity folded
+    // in as it is laid down, then the entity colour-tint and record alpha over the whole result.
+    private Built? BuildAssembly(Tp2SpritePlan plan)
+    {
+        int W = plan.CanvasW, H = plan.CanvasH;
+        if (W <= 0 || H <= 0) return null;
+        var acc = new byte[W * H * 4];
+        bool any = false;
+        double ox = plan.OriginX, oy = plan.OriginY;
+        foreach (var op in plan.Ops)
+        {
+            if (op.Kind == Tp2OpKind.Tint)
+            {
+                if (op.Tint is { } g) MultiplyRgb(acc, g.R, g.G, g.B);
+                continue;
+            }
+            var layer = CropCell(op.Cell);
+            if (layer is null) continue;
+            var (px, pw, ph) = layer.Value;
+            if (op.Tint is { } lt) MultiplyRgb(px, lt.Item1, lt.Item2, lt.Item3);
+            if (BlitPart(acc, W, H, px, pw, ph, op, ox, oy)) any = true;
+        }
+        if (!any) return null;
+        if (plan.AlphaScale is >= 0 and < 255) ScaleAlpha(acc, plan.AlphaScale);
+        var bmp = BitmapSource.Create(W, H, 96, 96, PixelFormats.Bgra32, null, acc, W * 4);
+        bmp.Freeze();
+        return new Built(bmp, W, H, plan.Pivot.X, plan.Pivot.Y);
+    }
+
+    // Inverse-map every destination pixel of the part's rotated/scaled box back to the part canvas,
+    // nearest-sample it and straight-alpha-over it into the shared buffer.
+    private static bool BlitPart(byte[] dst, int W, int H, byte[] src, int pw, int ph,
+        Tp2PlanOp op, double ox, double oy)
+    {
+        double opac = op.PartOpacity;
+        if (opac <= 0) return false;
+        if (opac > 1) opac = 1;
+        double scale = op.Scale <= 0 ? 1.0 : op.Scale;
+        // The engine's angle is counter-clockwise on screen, i.e. clockwise in this y-down buffer, so the
+        // forward rotation runs on -AngleDeg; the inverse below is its transpose. A flip then negates the
+        // ROTATED offset vector (the part is folded across the horizontal/vertical line through its own
+        // offset) rather than mirroring the source rect about the pivot. Both halves were fitted against
+        // every single-frame animdef's declared extent box -- see Tp2Assets.TryBuildSkeletal.
+        double rad = -op.AngleDeg * Math.PI / 180.0;
+        double cos = Math.Cos(rad), sin = Math.Sin(rad);
+        double pcx = op.PartCx * pw, pcy = op.PartCy * ph;
+        double pivotX = ox + op.OffX, pivotY = oy + op.OffY;
+
+        double[] cx = { -pcx, pw - pcx, -pcx, pw - pcx };
+        double[] cy = { -pcy, -pcy, ph - pcy, ph - pcy };
+        double minDX = double.MaxValue, maxDX = double.MinValue, minDY = double.MaxValue, maxDY = double.MinValue;
+        for (int i = 0; i < 4; i++)
+        {
+            double X = cx[i] * scale, Y = cy[i] * scale;
+            double rx = X * cos - Y * sin, ry = X * sin + Y * cos;
+            if (op.FlipX) rx = -rx;
+            if (op.FlipY) ry = -ry;
+            double dx = pivotX + rx, dy = pivotY + ry;
+            if (dx < minDX) minDX = dx; if (dx > maxDX) maxDX = dx;
+            if (dy < minDY) minDY = dy; if (dy > maxDY) maxDY = dy;
+        }
+        int x0 = Math.Max(0, (int)Math.Floor(minDX)), x1 = Math.Min(W - 1, (int)Math.Ceiling(maxDX));
+        int y0 = Math.Max(0, (int)Math.Floor(minDY)), y1 = Math.Min(H - 1, (int)Math.Ceiling(maxDY));
+
+        bool touched = false;
+        for (int dy = y0; dy <= y1; dy++)
+        {
+            double ryp = op.FlipY ? pivotY - dy : dy - pivotY;   // undo the fold across the offset line
+            for (int dx = x0; dx <= x1; dx++)
+            {
+                double rxp = op.FlipX ? pivotX - dx : dx - pivotX;
+                double ux = (rxp * cos + ryp * sin) / scale;      // inverse rotate (-angle), inverse scale
+                double uy = (-rxp * sin + ryp * cos) / scale;
+                double sx = ux + pcx, sy = uy + pcy;
+                int isx = (int)Math.Floor(sx + 0.5), isy = (int)Math.Floor(sy + 0.5);
+                if ((uint)isx >= (uint)pw || (uint)isy >= (uint)ph) continue;
+                int si = (isy * pw + isx) * 4;
+                int sa = (int)(src[si + 3] * opac);
+                if (sa <= 0) continue;
+                int di = (dy * W + dx) * 4;
+                int sb = src[si], sg = src[si + 1], sr = src[si + 2];
+                int da = dst[di + 3];
+                int oa = sa + da * (255 - sa) / 255;
+                if (oa == 0) { dst[di] = dst[di + 1] = dst[di + 2] = dst[di + 3] = 0; continue; }
+                int inv = 255 - sa;
+                dst[di] = (byte)((sb * sa + dst[di] * da * inv / 255) / oa);
+                dst[di + 1] = (byte)((sg * sa + dst[di + 1] * da * inv / 255) / oa);
+                dst[di + 2] = (byte)((sr * sa + dst[di + 2] * da * inv / 255) / oa);
+                dst[di + 3] = (byte)oa;
+                touched = true;
+            }
+        }
+        return touched;
     }
 
     // Crop a resolved cell out of its atlas and paste it back onto its original-size

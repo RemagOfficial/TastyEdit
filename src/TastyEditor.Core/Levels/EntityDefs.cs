@@ -33,10 +33,11 @@ public sealed class EntityCatalogue
 {
     private readonly Dictionary<string, EntityProto> _protos;
 
-    internal EntityCatalogue(List<string> names, Dictionary<string, EntityProto> protos)
+    internal EntityCatalogue(List<string> names, Dictionary<string, EntityProto> protos, bool typed = false)
     {
         Names = names;
         _protos = protos;
+        TypedRecords = typed;
     }
 
     /// <summary>A catalogue that knows nothing. Callers treat it as "no authority" (the guards below
@@ -46,6 +47,13 @@ public sealed class EntityCatalogue
     /// <summary>Every spawnable type name found in the corpus, ordinal-sorted (which groups a
     /// species' variants together).</summary>
     public List<string> Names { get; }
+
+    /// <summary>True for TP2, whose entities are typed records (no byte template) and whose names are
+    /// the curated <see cref="Tp2Entities"/> definition set. Such names need not contain an underscore
+    /// (<c>boulder1</c> is spelled with one but <c>lava</c>, <c>pyramid</c>, <c>sun</c> are not), so the
+    /// raw-span families' underscore byte-credibility heuristic does not apply - the <see cref="Knows"/>
+    /// definition check is the whole rule. False for the raw-span families and for an empty catalogue.</summary>
+    public bool TypedRecords { get; }
 
     public int Count => Names.Count;
     public bool IsEmpty => Names.Count == 0;
@@ -88,6 +96,7 @@ public static class EntityDefs
     {
         var into = new SortedSet<string>(StringComparer.Ordinal);
         var protos = new Dictionary<string, EntityProto>(StringComparer.Ordinal);
+        bool typed = false;                    // set once any TP2 model is seen (single-family folder)
         if (string.IsNullOrEmpty(levelsDir) || !Directory.Exists(levelsDir))
             return new EntityCatalogue(new List<string>(), protos);
 
@@ -141,14 +150,22 @@ public static class EntityDefs
 
                 case Tp2Level tp:
                     // TP2 entities are typed and re-serialised by the codec, so a new one is built from
-                    // field defaults (Tp2Spawn) rather than from a byte template. Names only.
+                    // field defaults (EntitySpawn.Tp2Add) rather than from a byte template. R4-C: the
+                    // curated Tp2Entities table is the game's own definition set and is the spawnable
+                    // authority, so it is seeded in FULL here rather than trusting a possibly-thin
+                    // per-install harvest - a modded or single-level folder used to yield fewer than the
+                    // Count>=8 names and the apply-side guard stood down entirely, letting any credible
+                    // string through. Seeding the table keeps TP2 policed always. Any extra type a shipped
+                    // level really carries is still added (a name the game loaded is by definition valid).
+                    foreach (var d in Tp2Entities.All) into.Add(d.Name);
+                    typed = true;
                     foreach (var l in tp.Layers)
                         foreach (var e in l.Entities)
                             if (!string.IsNullOrEmpty(e.Type)) into.Add(e.Type!);
                     break;
             }
         }
-        return new EntityCatalogue(into.ToList(), protos);
+        return new EntityCatalogue(into.ToList(), protos, typed && protos.Count == 0);
     }
 
     /// <summary>Every entity type name a decoded model carries, in record order. Tasty Blue and

@@ -21,12 +21,18 @@ public static class EntityFraming
 
     /// <summary>Parse a credible record head at absolute <paramref name="p"/>.
     /// Returns null (never throws) when the bytes there are not a valid head,
-    /// exactly like the Python head_at which returns None.</summary>
-    public static EntityHead? HeadAt(byte[] d, int p, int endHard)
+    /// exactly like the Python head_at which returns None.
+    /// <paramref name="anyName"/> relaxes the name to "printable, NUL-terminated" for offsets the
+    /// file itself names — a record start the loading cursor is sitting on. Those names are facts,
+    /// not guesses, and Forever's real prefabs include <c>h2o</c>, <c>bedrock</c>, <c>airplanepath1</c>:
+    /// short and underscore-free, which the search rule below would reject, costing a whole level its
+    /// entity block. In the search (anyName false) the rule stays, because there a name is the only
+    /// thing distinguishing a head from arbitrary bytes.</summary>
+    public static EntityHead? HeadAt(byte[] d, int p, int endHard, bool anyName = false)
     {
         if (p + 4 > endHard) return null;
         int n = ByteCursor.ReadI32At(d, p);
-        if (n < 5 || n > 64) return null;
+        if (n < (anyName ? 2 : 5) || n > 64) return null;
 
         int sStart = p + 4;
         if (sStart + n > d.Length) return null;         // len(s) < n
@@ -40,7 +46,7 @@ public static class EntityFraming
             if (c == (byte)'_') hasUnderscore = true;
             if (c < 32 || c > 126) return null;
         }
-        if (!hasUnderscore) return null;
+        if (!anyName && !hasUnderscore) return null;
         string core = System.Text.Encoding.ASCII.GetString(d, sStart, n - 1);
 
         int q = p + 4 + n;
@@ -96,7 +102,12 @@ public static class EntityFraming
     // centidegree rotation, then inserts TWO extra int32 before the has_box byte.
     // base_offsets (tb_ent_sem) locates colour/mass/priority from there; the only
     // per-game difference is that extension (0 for tb, 8 for f4/f5).
-    public const int Rot = 28;           // rotation int32 offset from the x int
+    //
+    // The two extra int32 sit BEFORE the rotation word (proven against shipped bytes:
+    // f4/f5 levels carry their per-record centidegree turn at xy_off+36, while xy_off+28
+    // is a pad that is always 0). So the rotation is the int32 immediately before has_box
+    // at <c>xy_off + Rot + ext</c> — which is +28 for Tasty Blue (ext=0) and +36 for f4/f5.
+    public const int Rot = 28;           // tb rotation int32 offset from the x int
     public const int ExtF4F5 = 8;        // the two extra int32 f4/f5 insert
     public const int ExtTb = 0;
 
@@ -107,20 +118,29 @@ public static class EntityFraming
     /// throws) when the shape isn't recognised, exactly like the Python returning None.</summary>
     public static EntDisplay ReadBody(byte[] d, int xyOff, int ext, int recEnd)
     {
-        int rot = xyOff + Rot + 4 <= d.Length ? ByteCursor.ReadI32At(d, xyOff + Rot) : 0;
-        int hb = xyOff + Rot + 4 + ext;
+        // Rotation is the int32 just before has_box (<c>xy_off + Rot + ext</c>): +28 on Tasty Blue,
+        // +36 on f4/f5, whose two extra int32 precede the turn. has_box below is unchanged (ro + 4).
+        int ro = xyOff + Rot + ext;
+        int rot = ro + 4 <= d.Length ? ByteCursor.ReadI32At(d, ro) : 0;
+        int hb = ro + 4;
         if (hb >= d.Length || hb >= recEnd)
-            return new EntDisplay(rot, DefaultColor(), 1.0, 0, false);
+            return new EntDisplay(rot, DefaultColor(), 1.0, 0, false, false);
         byte hasBox = d[hb];
         if (hasBox > 1)
-            return new EntDisplay(rot, DefaultColor(), 1.0, 0, false);
-        int p = hb + 1 + (hasBox != 0 ? 20 : 0);      // box = 5 x int32
+            return new EntDisplay(rot, DefaultColor(), 1.0, 0, false, false);
+        // The optional block after the presence byte is [flip][clip x/y/w/h]. drawBase reads the FIRST
+        // field through BinaryFile::readBoolean (which returns true only for the byte value 1) as the
+        // per-instance flip flag:  spriteAngle = flag ? -recordAngle : recordAngle;  setFlip(false, flag).
+        // So this single byte — not any move/path heuristic — decides an entity's facing mirror.
+        int p = hb + 1;
+        bool flip = hasBox != 0 && p < d.Length && d[p] == 1;
+        if (hasBox != 0) p += 20;                        // box = 5 x int32
         if (p + 4 + 8 + 4 > recEnd || p + 16 > d.Length)
-            return new EntDisplay(rot, DefaultColor(), 1.0, 0, false);
+            return new EntDisplay(rot, DefaultColor(), 1.0, 0, false, false);
         var col = new byte[] { d[p], d[p + 1], d[p + 2], d[p + 3] };
         double mass = BitConverter.ToDouble(d, p + 4);
         int prio = ByteCursor.ReadI32At(d, p + 12);
-        return new EntDisplay(rot, col, mass, prio, true);
+        return new EntDisplay(rot, col, mass, prio, true, flip);
     }
 
     /// <summary>Locate the fixed-width colour / mass / priority offsets of one entity body,
@@ -167,7 +187,7 @@ public static class EntityFraming
     public static int MeasureRecord(byte[] d, int recStart, int hardEnd, string? gameKey)
     {
         if (d is null || recStart < 0 || hardEnd > d.Length || recStart >= hardEnd) return -1;
-        var h = HeadAt(d, recStart, hardEnd);
+        var h = HeadAt(d, recStart, hardEnd, anyName: true);
         if (h is null) return -1;
         // The fixed-width run is read before the tail, and only its bounds depend on the record end, so
         // measuring with the block's own end as the bound is what the stream cursor sees.
@@ -216,7 +236,7 @@ public static class EntityFraming
         int p = start;
         for (int i = 0; i < count; i++)
         {
-            var h = HeadAt(d, p, d.Length);
+            var h = HeadAt(d, p, d.Length, anyName: true);
             int next = h is null ? -1 : MeasureRecord(d, p, d.Length, gameKey);
             if (next <= p) return SplitBlock(d, start, count, d.Length);
             heads.Add(h!.Value);
@@ -269,6 +289,10 @@ public static class EntityFraming
 }
 
 /// <summary>Display fields decoded from an entity record body (render-only). Mass and
-/// rotation drive the sprite's size and angle; colour is a later tint input. When the
-/// body shape is unrecognised <see cref="HasBody"/> is false and the defaults apply.</summary>
-public readonly record struct EntDisplay(int Rotation, byte[] ColorRgba, double Mass, int Priority, bool HasBody);
+/// rotation drive the sprite's size and angle; colour is a later tint input.
+/// <see cref="Flip"/> is the record's own per-instance flip flag (the first word of the optional
+/// box block, read by ElementEntity::drawBase): when set the game negates the authored angle and
+/// mirrors the sprite, which is what makes a mover read upright facing the other way and what turns
+/// a pinned prop (a barnacle) to the way it is placed. When the body shape is unrecognised
+/// <see cref="HasBody"/> is false and the defaults apply.</summary>
+public readonly record struct EntDisplay(int Rotation, byte[] ColorRgba, double Mass, int Priority, bool HasBody, bool Flip);

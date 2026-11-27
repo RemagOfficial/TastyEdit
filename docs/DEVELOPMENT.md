@@ -74,8 +74,7 @@ folder (ignored by git). Add a gate alongside any new write primitive — that i
 
 ## Codec corpus test
 
-Replays stored golden records against the codecs (the same contract the Python reference tooling
-produced):
+Replays stored golden records against the codecs:
 
 ```
 dotnet run --project tests/TastyEditor.Core.Tests --no-build -- tb f4 f5 tp2
@@ -85,17 +84,48 @@ It expects golden data and the installed games; with neither present it reports 
 than failing, which is why it does not run in a fresh clone. Set `GOLDENS_DIR` to a golden tree to
 run it.
 
-## The icon
+By default it samples six goldens per family, picked by **stride** through the name-sorted list —
+the first six f4 levels are all `aircon*`, and what a sample is supposed to buy is the family's
+variety, not its sort order — so the run takes seconds instead of the tens of minutes a full replay
+costs (the Forever / Final Bite levels run to megabytes and the entity-block search is super-linear
+in them). `--all` replays every golden. Levels that have been framed wrongly at some point are kept
+in a `MustRun` list and replay whatever the sample does, so a sampled run is still a gate rather
+than a spot check; the summary line says how many goldens were not replayed.
 
-`assets/app-icon.png` is the source artwork (currently a placeholder).
+The number that matters is `raw-span framing authority: N record-exact at both ends, …, 0 lenient`:
+which of the decoder's passes produced the answer, not only whether the answer round-trips. A
+byte-identical round-trip cannot tell the passes apart, because the opaque entity block re-emits
+whatever the walk sliced out of the file. A lenient pick fails the run.
+
+The goldens record what the earlier Python tooling read, and that is **not** an authority on these
+formats — the shipped bytes are. Where a golden's raw-span answer and the C# answer differ, the run
+reports it as advisory and stays green; the fix is to settle it against the file.
+
+When a level will not frame: `-- ents f4 <file-or-dir>` reports, per entity section, whether the
+record split succeeds and if not the first record the grammar cannot measure, with its bytes; and
+`TPE_DECODE_DIAG=1` narrates every strict-pass decline and every unanchored section to stderr.
+
+## Icons
+
+`assets/app-icon.png` is the source artwork for the whole set.
 
 ```
 python tools/make_icon.py            # writes src/TastyEditor.App/app.ico
+python tools/make_icon.py --games    # writes src/TastyEditor.App/icons/<key>.ico, one per game
 ```
 
-It emits a 10-entry icon (16/20/24/32/40/48/64/96/128/256) so the small sizes are rendered from the
-original rather than downscaled from one big bitmap. The project embeds it with `<ApplicationIcon>`
-(Explorer, taskbar, alt-tab) and carries it as a `<Resource>` for the window title bar.
+Each emits a 10-entry icon (16/20/24/32/40/48/64/96/128/256) so the small sizes are rendered from
+the source rather than downscaled from one big bitmap. The project embeds `app.ico` with
+`<ApplicationIcon>` (Explorer, taskbar, alt-tab) and carries it as a `<Resource>` for the window
+title bar.
+
+The five family tiles are `app.ico` with its purple re-lit in the game's accent colour (the same RGB
+the status-bar chip uses in `MainWindow.GameChip`) and its "TE" replaced by the family code. They
+ship as files next to the executable (`<Content>` in the project), because two things need to read
+them from disk rather than out of the binary: the window swaps `Icon` to the open level's family
+(`GameIcons`), and the installer points each Start-Menu shortcut at one — Explorer will not take an
+icon out of the apphost for a shortcut. A shared `.bin` association can only ever carry one icon, so
+that one stays the application's.
 
 ## Making a release
 
@@ -104,14 +134,22 @@ original rather than downscaled from one big bitmap. The project embeds it with 
    `InformationalVersion` with the repo commit, and that is how a bug report gets traced to a build.
 2. Publish the self-contained build players download (no .NET install needed):
    ```
-   dotnet publish src/TastyEditor.App -c Release -r win-x64 --self-contained true -o publish/TastyEdit-<version>
+   dotnet publish src/TastyEditor.App -c Release -r win-x64 --self-contained true -t:Rebuild -o publish/TastyEdit-<version>
    ```
 3. Zip the folder one level above the repo so it can't be committed:
    `tar.exe -a -cf ..\TastyEdit-<version>-win-x64.zip -C publish TastyEdit-<version>`
-4. `git tag -a v<version>` on the release commit, then push the branch **and the tags**
+4. Build the installer from that same publish folder, with [Inno Setup](https://jrsoftware.org/isinfo.php)
+   7 or newer installed. The version is passed in, so one number drives the artifact name, the
+   publish folder it reads and the Start-Menu entry:
+   ```
+   & "C:\Program Files\Inno Setup 7\ISCC.exe" "/DMyAppVersion=<version>" installer\TastyEdit.iss
+   ```
+   It writes `installer\Output\TastyEdit-Setup-<version>.exe` (that folder is gitignored). If the
+   version isn't passed, the script refuses to compile rather than guess one.
+5. `git tag -a v<version>` on the release commit, then push the branch **and the tags**
    (`git push origin main --follow-tags`).
-5. Create the release on GitHub pointing at that tag, attach the zip, and paste the CHANGELOG entry
-   as the release notes.
+6. Create the release on GitHub pointing at that tag, attach **both** the zip and the installer, and
+   paste the CHANGELOG entry as the release notes.
 
 A docs-only commit still needs a re-publish before the artifact ships, and `dotnet publish` is
 incremental: pass `-t:Rebuild`, or the copied exe keeps the previous commit's stamp.

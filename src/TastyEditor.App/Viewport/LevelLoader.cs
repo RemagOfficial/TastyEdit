@@ -33,6 +33,7 @@ public sealed class LevelDoc
         TbLevel tb => tb.Layers.Count,
         Tp2Level tp => tp.Layers.Count,
         ElementLevel el => el.Layers.Count,
+        Tp1Level t1 => t1.Root.Child("tilelayers")?.Children.Count ?? 0,
         _ => 0,
     };
 
@@ -113,13 +114,16 @@ public sealed class SaveReport
         return r;
     }
 
+    /// <summary>The developer-facing one-liner (byte count, diff range, size, round-trip verdict).
+    /// The status bar does NOT use this — R1 moved the status line to <see cref="UiText.SavedLine"/>
+    /// — but the headless gates print it, and it is what a bug report needs.</summary>
     public string Summarize()
     {
         if (!Changed) return "saved (identical to disk)";
         string span = FirstDiff >= 0 ? $", changed bytes @ {FirstDiff}..{LastDiff}" : "";
         string size = SizePreserved ? "size preserved" : $"size {SizeIn}->{SizeOut}";
-        string stab = Stable ? "re-decode stable" : "RE-DECODE DRIFT";
-        return $"saved {BytesChanged} byte(s){span}, {size}, {stab}";
+        string stab = Stable ? "re-decode stable" : "RE-DECODE DRIFT";   // copyaudit: dev  (gate log, never the UI)
+        return $"saved {BytesChanged} byte(s){span}, {size}, {stab}";    // copyaudit: dev
     }
 }
 

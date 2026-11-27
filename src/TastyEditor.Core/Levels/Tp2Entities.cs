@@ -5,7 +5,14 @@ namespace TastyEditor.Core.Levels;
 /// spawn/eat definition, so they are the ONLY valid targets when reassigning an
 /// entity sprite (S5-5) - an arbitrary image-map cell such as the bonus-level button
 /// has no entity definition and crashes the game when placed as an entity. Decorations
-/// are pure sprites and are not limited to this set. Generated - do not hand-edit.
+/// are pure sprites and are not limited to this set.
+///
+/// <para>R4-C: cross-checked against the entity TYPE set every shipped TP2 level uses (see the
+/// <c>entitytypes</c> gate's tp2 audit). That corpus is demonstrably loadable in game, so any name it
+/// carries that was missing here has been added, and the source transcription errors (a name typed
+/// where a display label belongs, a dropped underscore) have been corrected against the shipped
+/// bytes. This list is the single spawnable authority for both the New-entity picker and the
+/// inspector's entity reassignment, so it must not drift below what the game can actually place.</para>
 /// </summary>
 public static class Tp2Entities
 {
@@ -30,11 +37,13 @@ public static class Tp2Entities
         new("flask", "Flask", "Modern"),
         new("oscilloscope", "Oscilloscope", "Modern"),
         new("chalk", "Chalk", "Modern"),
-        new("bunsun", "Bunsen Burner", "Modern"),
+        new("bunsen", "Bunsen Burner", "Modern"),
         new("paper", "Paper", "Modern"),
         new("microscope", "Microscope", "Modern"),
-        new("scientist_young_lab_1", "Young Scientist", "Modern"),
-        new("scientist_old_lab_1", "Old Scientist", "Modern"),
+        new("scientist_young_lab1", "Young Scientist", "Modern"),
+        new("scientist_young_lab2", "Young Scientist", "Modern"),
+        new("scientist_old_lab1", "Old Scientist", "Modern"),
+        new("scientist_old_lab2", "Old Scientist", "Modern"),
         new("timemachine", "Time Machine", "Modern"),
         new("simon_lab1", "Simon", "Modern"),
         new("rat_lab1", "Lab Rat", "Modern"),
@@ -68,6 +77,7 @@ public static class Tp2Entities
         new("termite_dino1", "Termite", "Dino"),
         new("snail_dino1", "Snail", "Dino"),
         new("mushroom1", "White Mushroom", "Dino"),
+        new("ant_dino1", "Ant", "Dino"),
         new("ant_dino2", "Ant", "Dino"),
         new("leaf_maple", "Maple Leaf", "Dino"),
         new("butterfly1_dino1", "Butterfly", "Dino"),
@@ -177,10 +187,11 @@ public static class Tp2Entities
         new("hippo_egypt1", "Hippopotamus", "Egypt"),
         new("hippo_egypt2", "Hippopotamus", "Egypt"),
         new("hippo_baby1", "Baby Hippo", "Egypt"),
-        new("Arabian Horse", "Arabian Horse", "Egypt"),
+        new("horse_egypt1", "Arabian Horse", "Egypt"),
         new("horse_baby_egypt1", "Arabian Foal", "Egypt"),
         new("horse_egypt2", "Horse", "Egypt"),
         new("croc_egypt1", "Crocodile", "Egypt"),
+        new("croc_egypt2", "Crocodile", "Egypt"),
         new("croc_egypt3", "Crocodile", "Egypt"),
         new("sphinx", "Sphinx", "Egypt"),
         new("pyramid", "Pyramid", "Egypt"),
@@ -205,6 +216,7 @@ public static class Tp2Entities
         new("rat_future1", "Laser Rat", "Future"),
         new("rat_future2", "Laser Rat", "Future"),
         new("raygun", "Raygun", "Future"),
+        new("brain_future1", "Brain", "Future"),
         new("brain_watch1", "Brain", "Future"),
         new("hoverboard", "Hoverboard", "Future"),
         new("vacuum_future1", "Sentient Vacuum Cleaner", "Future"),

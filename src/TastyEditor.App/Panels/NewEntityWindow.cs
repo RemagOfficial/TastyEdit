@@ -60,6 +60,13 @@ public sealed class NewEntityWindow : Window
         ResizeMode = ResizeMode.CanResizeWithGrip;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         ShowInTaskbar = false;
+        // A Window subclass does not pick up the implicit WindowStyle, so without this it keeps the
+        // default white background while its TextBlock labels read the app-wide light ink -
+        // light-on-white. Point the chrome at the theme brushes by key so it follows a live toggle.
+        Theme.Ref(this, Window.BackgroundProperty, Theme.KWindow);
+        Theme.Ref(this, Window.ForegroundProperty, Theme.KText);
+        Theme.StyleCombo(_type);
+        Theme.StyleCombo(_layer);
 
         var form = new StackPanel { Margin = new Thickness(12) };
         form.Children.Add(Heading("Entity type"));
@@ -72,8 +79,8 @@ public sealed class NewEntityWindow : Window
         form.Children.Add(_type);
         form.Children.Add(Helper(_cat.IsEmpty
             ? "No shipped levels were found for this install, so any credible type name is allowed."
-            : $"Type the prefab name. {_cat.Count} types are defined by this game's shipped levels; "
-              + "anything else loads as nothing (the engine drops it)."));
+            : $"Type the entity's type name. {_cat.Count} types are defined by this game's shipped levels; "
+              + "any other name will be dropped silently when the game loads the level."));
 
         if (layerCount > 1)
         {
@@ -149,7 +156,8 @@ public sealed class NewEntityWindow : Window
     {
         string name = _type.Text.Trim();
         bool knows = _cat.Knows(name);
-        bool credible = EntitySpawn.CredibleName(name);
+        bool typed = _cat.TypedRecords;         // TP2: curated names, no underscore rule
+        bool credible = EntitySpawn.NameOk(name, typed);
         bool authority = _cat.Count >= 8;              // a thin corpus proves too little to refuse
 
         if (name.Length == 0)
@@ -160,8 +168,10 @@ public sealed class NewEntityWindow : Window
         }
         if (!credible)
         {
-            Say("A type must be 4-63 printable ASCII characters and contain an underscore — that is what "
-                + "the loader's record head accepts.", false);
+            Say(typed
+                ? "A type name must be 1-63 plain characters \u2014 this game names its entities like \u201clava\u201d or \u201ctree_oak\u201d."
+                : "A type name must be 4-63 plain characters and contain an underscore \u2014 the game's "
+                  + "levels only ever use names like that.", false);
             _ok.IsEnabled = false;
             return;
         }
@@ -172,10 +182,10 @@ public sealed class NewEntityWindow : Window
             _ok.IsEnabled = false;
             return;
         }
-        if (knows && _cat.ProtoFor(name)?.Raw is byte[] raw)
+        if (knows && _cat.ProtoFor(name)?.Raw is not null)
         {
-            Say($"Ready. The record body is copied from {raw.Length} bytes of a shipped {name} entity "
-                + $"({_cat.ProtoFor(name)!.SourceLevel}); every field stays editable afterwards.", false);
+            Say($"Ready. {name} starts as a copy of one that already ships in this game "
+                + $"(from {_cat.ProtoFor(name)!.SourceLevel}); every field stays editable afterwards.", false);
             _ok.IsEnabled = true;
             return;
         }
@@ -200,7 +210,7 @@ public sealed class NewEntityWindow : Window
     private void Accept()
     {
         string name = _type.Text.Trim();
-        if (!EntitySpawn.CredibleName(name) || (_cat.Count >= 8 && !_cat.Knows(name))) { UpdateState(); return; }
+        if (!EntitySpawn.NameOk(name, _cat.TypedRecords) || (_cat.Count >= 8 && !_cat.Knows(name))) { UpdateState(); return; }
         TypeName = name;
         DialogResult = true;
         Close();

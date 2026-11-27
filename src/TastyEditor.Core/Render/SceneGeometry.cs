@@ -38,13 +38,20 @@ public sealed class ScenePoly : ISceneElem
     public List<PointD> Points = new();
 }
 
-/// <summary>An open polyline (path splines, point lists).</summary>
+/// <summary>An open polyline (path splines, point lists).
+/// When it came from an editable path record (a tb / tp2 <c>TbPath</c> / <c>Tp2Path</c>, or an
+/// f4/f5 framed path record) <c>Source</c> is that record / edit handle and <c>ShapeIndex</c> is
+/// unused (-1), so the viewport can read and edit its spline points in place through
+/// <see cref="SceneProjector"/>. Point-list lines and every other display-only polyline leave
+/// these null, so a drag is offered only where a byte-faithful re-encode path exists.</summary>
 public sealed class SceneLine : ISceneElem
 {
     public SceneKind Kind { get; set; }
     public string? Label { get; set; }
     public int Layer { get; set; }
     public int Id { get; set; }
+    public object? Source;
+    public int ShapeIndex = -1;
     public List<PointD> Points = new();
 }
 
@@ -101,11 +108,26 @@ public sealed class SceneCross : ISceneElem
     // list simply keeps projection order.
     public double ZOrder;
 
-    // ElementDecoration::getFlipX / getFlipY (the two 4-byte booleans of the record's optional extra
-    // block). The game mirrors the sprite about its own centre in LOCAL space, i.e. before rotation,
-    // so a flipped deco with a rotation still leans the way the record says.
+    // ElementDecoration::getFlipX / getFlipY (the two BOOL BYTES at the head of the record's optional
+    // extra block; readBoolean consumes one byte and returns `byte == 1`). The game mirrors the sprite
+    // about its own centre in LOCAL/image space, i.e. before rotation, so a flipped deco with a
+    // rotation still leans the way the record says.
     public bool FlipX;
     public bool FlipY;
+
+    // Which order the renderer composes the mirror and the turn. ElementDecoration::draw2 rewrites
+    // the cell-space anchor and the blit UV from the cell dimensions (image space) and only then
+    // applies the unchanged angle - so decorations mirror BEFORE the turn (FlipBeforeRotate = true,
+    // set by the f4/f5 deco projector). Tasty Planet 1's loose-art renderer follows the same
+    // PIL/tk recipe (transpose the source, THEN rotate). The false branch is the fallback for a
+    // caller that genuinely wants the mirror applied to the already-rotated placement.
+    public bool FlipBeforeRotate;
+
+    // The player goo is a composite sprite, not a single cell: the base editor scales its body off the
+    // greygoo entitydef's areacoverage with an editor visibility boost, then overlays the two eyes and
+    // pupils from the shared newgoo0 sheet. The viewport uses the goo scale in place of the generic
+    // entity mass model and paints those face parts when this is set. Display-only. tp1 only.
+    public bool IsGoo;
 }
 
 public readonly record struct PointD(double X, double Y);

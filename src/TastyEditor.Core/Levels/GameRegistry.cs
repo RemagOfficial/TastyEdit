@@ -39,6 +39,15 @@ public sealed class Tp2CodecAdapter : ILevelCodec
     public JsonObject SpanModel(object model) => Tp2Codec.Instance.SpanModel((Tp2Level)model);
 }
 
+/// <summary>Adapter for the Tasty Planet 1 verbatim XML codec. Decode rejects anything
+/// that is not a tp1 <c>&lt;level&gt;</c>, so it is safe to try last in detection.</summary>
+public sealed class Tp1CodecAdapter : ILevelCodec
+{
+    public object Decode(byte[] d) => Tp1Codec.Instance.Decode(d);
+    public byte[] Encode(object model) => Tp1Codec.Instance.Encode((Tp1Level)model);
+    public JsonObject SpanModel(object model) => Tp1Codec.Instance.SpanModel((Tp1Level)model);
+}
+
 /// <summary>A supported game: its identity, codec and the asset-layout facts the
 /// editor needs. Mirrors the codec/detection slice of games.py GameProfile; the
 /// Qt-specific callbacks (dialogs, asset loaders) live in the WPF layer, not here.</summary>
@@ -89,12 +98,23 @@ public static class GameRegistry
         EntityFullBody = false, IsDirect = true,
     };
 
+    public static readonly GameProfile Tp1 = new()
+    {
+        Key = "tp1", Label = "Tasty Planet", Short = "TP1",
+        Codec = new Tp1CodecAdapter(), Decode = b => new Tp1CodecAdapter().Decode(b),
+        EntityFullBody = false, IsDirect = false,
+    };
+
     private static readonly Dictionary<string, GameProfile> ByKey = new()
     {
-        ["tp2"] = Tp2, ["tb"] = Tb, ["f4"] = Forever, ["f5"] = FinalBite,
+        ["tp2"] = Tp2, ["tb"] = Tb, ["f4"] = Forever, ["f5"] = FinalBite, ["tp1"] = Tp1,
     };
 
     public static IReadOnlyCollection<GameProfile> All => ByKey.Values;
+
+    /// <summary>The set of supported game keys (<c>tp2</c> / <c>tb</c> / <c>f4</c> / <c>f5</c> /
+    /// <c>tp1</c>). Used to validate a mod manifest's declared target without throwing.</summary>
+    public static readonly IReadOnlyCollection<string> KnownKeys = ByKey.Keys;
 
     public static GameProfile Profile(string key) =>
         ByKey.TryGetValue(key, out var p)
@@ -105,7 +125,7 @@ public static class GameRegistry
     /// ElementEngine codecs can mutually mis-tile a foreign file, so a bare trial is
     /// only a candidate set; the install-folder path marker (see <see cref="PathHint"/>)
     /// is the definitive discriminator.</summary>
-    public static readonly string[] DetectOrder = { "f5", "f4", "tb", "tp2" };
+    public static readonly string[] DetectOrder = { "f5", "f4", "tb", "tp2", "tp1" };
 
     // Distinctive install-folder substrings, most specific first.
     private static readonly (string Marker, string Key)[] PathMarkers =
@@ -114,6 +134,9 @@ public static class GameRegistry
         ("tasty planet forever", "f4"),
         ("tasty blue", "tb"),
         ("back for seconds", "tp2"),
+        // A bare "Tasty Planet" folder is the original game; the suffixed installs above
+        // win first, so this generic marker stays last.
+        ("tasty planet", "tp1"),
     };
 
     /// <summary>Game key implied by the file's install-folder path, or null.</summary>

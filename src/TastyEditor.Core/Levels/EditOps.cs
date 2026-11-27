@@ -145,6 +145,451 @@ public static class EditOps
         _ => "",
     };
 
+    // ============================================================== CREATE ===
+    //
+    // The create half of R4's "create-default-then-edit": a New command appends one
+    // minimal, in-scale record so the author immediately has something to grab and
+    // reshape with the existing handles / inspector. Every family uses the append
+    // contract its paste op already proves (I1: untouched bytes stay byte-identical;
+    // I3: the addition is one whole record inside its own span). The typed families
+    // (tb / tp2) build a record from field defaults the codecs re-serialise; the raw-
+    // span families (f4 / f5) have no field writer, so a new record is cloned from a
+    // real shipped record of the same kind and re-anchored — we never invent bytes, and
+    // a kind with no shipped template (or no storage at all) reports NotSupported.
+
+    // Default proportions for a from-scratch shape, ported from the reference editor's
+    // add_wall / add_water / add_path so a created object reads as a real volume.
+    private const double NewWallW = 800.0, NewWallH = 140.0;   // wall / defined-area box
+    private const double NewWaterW = 1200.0, NewWaterH = 400.0;
+    private const double NewPathSpan = 300.0;                  // length of a new two-point path
+
+    /// <summary>Append a brand-new default record of <paramref name="kind"/> to one layer,
+    /// centred on the world point <paramref name="at"/> (the view centre or the cursor). An
+    /// optional <paramref name="sprite"/> re-points a created decoration at a chosen name.
+    /// Returns <see cref="EditResult.Done"/> (model mutated, dirty) or a reason code with the
+    /// model untouched. Entity creation lives in <see cref="EntitySpawn.Add"/> (a different
+    /// provenance contract), so <see cref="SceneKind.Entity"/> is deliberately not handled here.</summary>
+    public static EditResult NewRecord(object? model, SceneKind kind, int layer, PointD at, string? sprite = null)
+        => NewRecord(model, kind, layer, at, out _, sprite);
+
+    /// <summary>Create a minimal default record of <paramref name="kind"/> on <paramref name="layer"/>
+    /// anchored at world point <paramref name="at"/>; on <see cref="EditResult.Done"/> the newly added
+    /// record (or, for a raw-span family, a delete-/select-able edit handle over it) is returned in
+    /// <paramref name="created"/> so the shell can select it and a caller can prove the write was
+    /// localised. <paramref name="sprite"/> names a deco template when the caller has one.</summary>
+    public static EditResult NewRecord(object? model, SceneKind kind, int layer, PointD at, out object? created, string? sprite = null)
+    {
+        created = null;
+        return model switch
+        {
+            TbLevel tb => TbCreate(tb, kind, layer, at, sprite, out created),
+            Tp2Level tp => Tp2Create(tp, kind, layer, at, sprite, out created),
+            ElementLevel el => ElemCreate(el, kind, layer, at, sprite, out created),
+            _ => EditResult.NotSupported,
+        };
+    }
+
+    // Normalised rectangle vertices (x spans ±0.5) matching the reference _rect_wall_verts;
+    // the projector maps world = pos + vertex * width, so a unit-scaled shape lands in world size.
+    private static double[][] RectWallVerts(double width, double length)
+    {
+        double hy = width != 0 ? 0.5 * length / width : 0.5;
+        return new[]
+        {
+            new[] { -0.5, -hy }, new[] { 0.5, -hy }, new[] { 0.5, hy }, new[] { -0.5, hy },
+        };
+    }
+
+    /// <summary>Port of the reference editor's recompute_path: derive each spline point's smooth
+    /// tangents from its neighbours (p1 = −p2 = ±a quarter of the neighbour gap) and the record's
+    /// bbox centre / extent from the anchors, so a created or reshaped path has the shape of a
+    /// shipped one the game follows smoothly. Each point is the six doubles
+    /// [p0x, p0y, p1x, p1y, p2x, p2y]; only the p0 anchors are read — the handle pairs are written.
+    /// Shared by creation and the runtime path editor.</summary>
+    internal static void RecomputeSpline(double[][] sps, out double posX, out double posY, out double extX, out double extY)
+    {
+        posX = posY = extX = extY = 0;
+        int n = sps.Length;
+        if (n == 0) return;
+        double minx = double.MaxValue, miny = double.MaxValue;
+        for (int i = 0; i < n; i++)
+        {
+            double[] cur = sps[i];
+            double[] prev = i > 0 ? sps[i - 1] : cur;
+            double[] nxt = i < n - 1 ? sps[i + 1] : cur;
+            double tx = (nxt[0] - prev[0]) * 0.25, ty = (nxt[1] - prev[1]) * 0.25;
+            cur[2] = -tx; cur[3] = -ty;    // p1 (in-handle)
+            cur[4] = tx;  cur[5] = ty;     // p2 (out-handle)
+            if (cur[0] < minx) minx = cur[0];
+            if (cur[1] < miny) miny = cur[1];
+        }
+        double maxx = double.MinValue, maxy = double.MinValue;
+        foreach (var sp in sps)
+        {
+            if (sp[0] > maxx) maxx = sp[0];
+            if (sp[1] > maxy) maxy = sp[1];
+        }
+        posX = (minx + maxx) / 2; posY = (miny + maxy) / 2;
+        extX = maxx - minx; extY = maxy - miny;
+    }
+
+    // A fresh two-point horizontal path centred on (cx, cy), tangents + bbox recomputed. Shared
+    // by tb and tp2 creation (the record types differ only in their tail id / reserved word).
+    private static (double[][] splines, double posX, double posY, double extX, double extY) NewSplinePoints(double cx, double cy)
+    {
+        double half = NewPathSpan / 2;
+        var sps = new[] { new double[6], new double[6] };
+        sps[0][0] = cx - half; sps[0][1] = cy;
+        sps[1][0] = cx + half; sps[1][1] = cy;
+        RecomputeSpline(sps, out double px, out double py, out double ex, out double ey);
+        return (sps, px, py, ex, ey);
+    }
+
+    // --------------------------------------------------------- tasty blue ---
+
+    private static EditResult TbCreate(TbLevel tb, SceneKind kind, int layer, PointD at, string? sprite, out object? created)
+    {
+        created = null;
+        if (tb.Layers.Count == 0) return EditResult.Failed;
+        int li = Math.Clamp(layer, 0, tb.Layers.Count - 1);
+        var L = tb.Layers[li];
+        switch (kind)
+        {
+            case SceneKind.Wall:
+            {
+                var w = new TbWall
+                {
+                    PosX = at.X, PosY = at.Y, Width = NewWallW, Length = NewWallH,
+                    WallTypeName = "everything", HasShapesFlag = 0,
+                    WallId = NextTbWallId(tb), Raw = Array.Empty<byte>(), Off = -1,
+                };
+                w.Shapes.Add(new TbShape { Name = "poly", Vertices = RectWallVerts(NewWallW, NewWallH) });
+                L.Walls.Add(w);
+                created = w;
+                return EditResult.Done;
+            }
+            case SceneKind.Area:
+            {
+                // A defined area is a named trigger; inherit a real area's name when the level
+                // has one (an unknown name is legal bytes but does nothing in game), else a plain
+                // square. The codec re-serialises every field, so the fresh record is lossless.
+                var src = tb.Layers.SelectMany(x => x.Areas).FirstOrDefault();
+                var a = src is null
+                    ? new TbDefinedArea { AreaName = "" }
+                    : CloneTbArea(src);
+                a.PosX = at.X; a.PosY = at.Y;
+                a.Width = NewWallW; a.Length = NewWallH;
+                a.HasShapesFlag = 0; a.ShapesTailFlag = 0;
+                a.Shapes = new List<TbShape> { new TbShape { Name = "poly", Vertices = RectWallVerts(NewWallW, NewWallH) } };
+                a.AreaId = NextTbAreaId(tb); a.Raw = Array.Empty<byte>(); a.Off = -1;
+                L.Areas.Add(a);
+                created = a;
+                return EditResult.Done;
+            }
+            case SceneKind.Water:
+            {
+                var q = NewTbWater(tb, at.X, at.Y);
+                L.Waters.Add(q);
+                created = q;
+                return EditResult.Done;
+            }
+            case SceneKind.Path:
+            {
+                var (sps, px, py, ex, ey) = NewSplinePoints(at.X, at.Y);
+                var pth = new TbPath
+                {
+                    PathName = NextPathName(tb), PosX = px, PosY = py, ExtentXGuess = ex, ExtentYGuess = ey,
+                    PathFlag = 1, SplinePoints = sps, InternalIdGuess = NextTbPathId(tb),
+                    Raw = Array.Empty<byte>(), Off = -1,
+                };
+                L.Paths.Add(pth);
+                created = pth;
+                return EditResult.Done;
+            }
+            case SceneKind.Deco:
+                return TbCreateDeco(tb, L, at, sprite, out created);
+            default:
+                return EditResult.NotSupported;
+        }
+    }
+
+    // ElementWater constructor defaults recovered from the disassembly (mirrors tp2editor.
+    // _new_water_record): copy a real volume's flags/scalars when one exists so a new box matches
+    // the level's style, else the shipped defaults; geometry is then set from the call.
+    private static TbWater NewTbWater(TbLevel tb, double cx, double cy)
+    {
+        var src = tb.Layers.SelectMany(l => l.Waters).FirstOrDefault();
+        var q = src is not null ? CloneTbWater(src) : new TbWater { Name = "" };
+        if (src is null)
+        {
+            q.I[0] = 1; q.I[1] = 1; q.I[2] = 1; q.I[3] = 1; q.I[4] = 1; q.I[5] = 1; q.I[6] = 1; q.I[7] = 1;
+            q.D[0] = 50; q.D[1] = 50; q.D[2] = 50; q.D[3] = 1; q.D[4] = 1;
+        }
+        SetWaterRect(q, cx, cy, NewWaterW, NewWaterH);
+        q.WaterId = NextTbWaterId(tb);
+        q.Raw = Array.Empty<byte>(); q.Off = -1;
+        return q;
+    }
+
+    // Mirror SceneProjector.WaterSetRect: centre + full size, with the local min/max half-extents.
+    private static void SetWaterRect(TbWater q, double cx, double cy, double sw, double sh)
+    {
+        q.D[5] = cx; q.D[6] = cy; q.D[7] = sw; q.D[8] = sh;
+        q.D[9] = -sw / 2; q.D[10] = -sh / 2; q.D[11] = sw / 2; q.D[12] = sh / 2;
+    }
+
+    private static EditResult TbCreateDeco(TbLevel tb, TbLayer layer, PointD at, string? sprite, out object? created)
+    {
+        created = null;
+        var src = TbDecoTemplate(tb, sprite);
+        if (src is null) return EditResult.NotSupported;   // never invent a decoration body
+        double baseX = layer.Decos.Count > 0 ? layer.Decos[^1].PosX * Centi : 0;
+        double baseY = layer.Decos.Count > 0 ? layer.Decos[^1].PosY * Centi : 0;
+        long tx = (long)Math.Round(at.X * Centi), ty = (long)Math.Round(at.Y * Centi);
+
+        var d = new TbDeco
+        {
+            Raw = (byte[])src.Raw.Clone(), Owner = layer,
+            Rotation = src.Rotation, DimW = src.DimW, DimH = src.DimH,
+            ColorRgba = (byte[])src.ColorRgba.Clone(), FlipX = src.FlipX, FlipY = src.FlipY,
+        };
+        layer.Decos.Add(d);
+        // An explicit sprite re-points the record (and sets Name); otherwise it keeps the
+        // template's look so the copy renders, and the author re-sprites it in the inspector.
+        if (!string.IsNullOrEmpty(sprite)) TbEdit.SetDecoSprite(tb, d, sprite);
+        else d.Name = src.Name;
+        int hl = DecoHeadLen(d.Raw);
+        if (hl < 0) { layer.Decos.RemoveAt(layer.Decos.Count - 1); return EditResult.Failed; }
+        WriteI32(d.Raw, hl, (int)(tx - (long)baseX));
+        WriteI32(d.Raw, hl + 4, (int)(ty - (long)baseY));
+        d.PosX = tx / Centi; d.PosY = ty / Centi;
+        created = d;
+        return EditResult.Done;
+    }
+
+    private static TbDeco? TbDecoTemplate(TbLevel tb, string? sprite) => sprite is { Length: > 0 }
+        ? tb.Layers.SelectMany(l => l.Decos).FirstOrDefault(d => d.Name == sprite && d.Raw.Length > 1)
+          ?? tb.Layers.SelectMany(l => l.Decos).FirstOrDefault(d => d.Raw.Length > 1)
+        : tb.Layers.SelectMany(l => l.Decos).FirstOrDefault(d => d.Raw.Length > 1);
+
+    private static string NextPathName(TbLevel tb)
+    {
+        var taken = new HashSet<string>(tb.Layers.SelectMany(l => l.Paths).Select(p => p.PathName ?? ""), StringComparer.Ordinal);
+        int k = 1; while (taken.Contains($"path{k}")) k++;
+        return $"path{k}";
+    }
+
+    private static int NextTbPathId(TbLevel tb)
+    {
+        int m = 0; foreach (var l in tb.Layers) foreach (var p in l.Paths) if (p.InternalIdGuess > m) m = p.InternalIdGuess;
+        return m == 0 ? 1000 : m + 1;
+    }
+
+    // ---------------------------------------------------------------- tp2 ---
+
+    private static EditResult Tp2Create(Tp2Level tp, SceneKind kind, int layer, PointD at, string? sprite, out object? created)
+    {
+        created = null;
+        if (tp.Layers.Count == 0) return EditResult.Failed;
+        int li = Math.Clamp(layer, 0, tp.Layers.Count - 1);
+        var L = tp.Layers[li];
+        switch (kind)
+        {
+            case SceneKind.Wall:
+            {
+                var w = new Tp2Wall
+                {
+                    PosX = at.X, PosY = at.Y, Width = NewWallW, Length = NewWallH,
+                    WallTypeName = "everything", HasShapesFlag = 0, Reserved = 0, WallId = NextWallId(tp),
+                };
+                w.Shapes.Add(new Tp2Shape { Name = "poly", Vertices = RectWallVerts(NewWallW, NewWallH) });
+                L.Walls.Add(w);
+                created = w;
+                return EditResult.Done;
+            }
+            case SceneKind.Path:
+            {
+                var (sps, px, py, ex, ey) = NewSplinePoints(at.X, at.Y);
+                var pth = new Tp2Path
+                {
+                    PathName = NextTp2PathName(tp), PosX = px, PosY = py, ExtentXGuess = ex, ExtentYGuess = ey,
+                    PathFlag = 1, SplinePoints = sps, InternalIdGuess = NextTp2PathId(tp),
+                };
+                L.Paths.Add(pth);
+                created = pth;
+                return EditResult.Done;
+            }
+            case SceneKind.Deco:
+            {
+                // TP2 decorations are typed, so a create is a deep clone of a real deco nudged to
+                // the point (the codec re-serialises every field; the sprite stays editable after).
+                var src = Tp2DecoTemplate(tp, sprite);
+                if (src is null) return EditResult.NotSupported;
+                var d = CloneTp2Deco(src);
+                d.Position = new[] { at.X, at.Y };
+                L.Decos.Add(d);
+                if (!string.IsNullOrEmpty(sprite)) Tp2Edit.SetDecoSprite(tp, d, sprite);
+                created = d;
+                return EditResult.Done;
+            }
+            // TP2 has no defined-area or water storage (Tp2Layer holds Walls/Paths/Entities/Decos only).
+            default:
+                return EditResult.NotSupported;
+        }
+    }
+
+    private static Tp2Deco? Tp2DecoTemplate(Tp2Level tp, string? sprite) => sprite is { Length: > 0 }
+        ? tp.Layers.SelectMany(l => l.Decos).FirstOrDefault(d => d.String == sprite)
+          ?? tp.Layers.SelectMany(l => l.Decos).FirstOrDefault()
+        : tp.Layers.SelectMany(l => l.Decos).FirstOrDefault();
+
+    private static string NextTp2PathName(Tp2Level tp)
+    {
+        var taken = new HashSet<string>(tp.Layers.SelectMany(l => l.Paths).Select(p => p.PathName ?? ""), StringComparer.Ordinal);
+        int k = 1; while (taken.Contains($"path{k}")) k++;
+        return $"path{k}";
+    }
+
+    private static int NextTp2PathId(Tp2Level tp)
+    {
+        int m = 0; foreach (var l in tp.Layers) foreach (var p in l.Paths) if (p.InternalIdGuess > m) m = p.InternalIdGuess;
+        return m == 0 ? 1000 : m + 1;
+    }
+
+    // ------------------------------------------------ forever / final bite ---
+
+    // Section index per kind (matches SceneProjector.ElemIdx): f5 wall0 snow1 area2 path3
+    // pointlist4 entity5 deco6 water7; f4 wall0 area1 path2 pointlist3 entity4 deco5 water6.
+    private static int ElemSectionIndex(string game, SceneKind kind) => (game, kind) switch
+    {
+        ("f5", SceneKind.Wall) => 0,
+        ("f5", SceneKind.Area) => 2,
+        ("f5", SceneKind.Path) => 3,
+        ("f5", SceneKind.Deco) => 6,
+        ("f4", SceneKind.Wall) => 0,
+        ("f4", SceneKind.Area) => 1,
+        ("f4", SceneKind.Path) => 2,
+        ("f4", SceneKind.Deco) => 5,
+        _ => -1,
+    };
+
+    private static EditResult ElemCreate(ElementLevel el, SceneKind kind, int layer, PointD at, string? sprite, out object? created)
+    {
+        created = null;
+        if (el.Layers.Count == 0) return EditResult.Failed;
+        int li = Math.Clamp(layer, 0, el.Layers.Count - 1);
+        var secs = el.Layers[li];
+        string game = el.SectionsPerLayer >= 8 ? "f5" : "f4";
+        int idx = ElemSectionIndex(game, kind);
+        if (idx < 0 || idx >= secs.Count) return EditResult.NotSupported;
+        var sec = secs[idx];
+        if (sec.Opaque || sec.Records.Count == 0) return EditResult.NotSupported;   // no shipped record to copy
+
+        switch (kind)
+        {
+            case SceneKind.Wall:
+            case SceneKind.Area:
+            {
+                var rec = (byte[])sec.Records[^1].Clone();
+                if (!TryPlaceShapePos(rec, kind == SceneKind.Wall, at.X, at.Y)) return EditResult.Failed;
+                sec.Records.Add(rec);
+                sec.Count++;
+                created = SceneProjector.BuildShapeEdit(sec, sec.Records.Count - 1, kind == SceneKind.Wall);
+                return EditResult.Done;
+            }
+            case SceneKind.Path:
+            {
+                var rec = (byte[])sec.Records[^1].Clone();
+                if (!TryPlacePathPos(rec, at.X, at.Y)) return EditResult.Failed;
+                sec.Records.Add(rec);
+                sec.Count++;
+                return EditResult.Done;
+            }
+            case SceneKind.Deco:
+                return ElemCreateDeco(el, sec, at, sprite, out created);
+            default:
+                return EditResult.NotSupported;
+        }
+    }
+
+    private static EditResult ElemCreateDeco(ElementLevel el, Section sec, PointD at, string? sprite, out object? created)
+    {
+        created = null;
+        int n = sec.Records.Count;
+        var (baseX, baseY) = DecoChainAt(sec.Records, n - 1);   // centiunits accumulated to the tail
+        long tx = (long)Math.Round(at.X * Centi), ty = (long)Math.Round(at.Y * Centi);
+        var clone = (byte[])sec.Records[^1].Clone();
+        sec.Records.Add(clone);
+        sec.Count++;
+        int idx = sec.Records.Count - 1;
+        if (!string.IsNullOrEmpty(sprite))
+            ElemEdit.SetDecoSprite(new DecoEditHandle(el, sec, idx), sprite);
+        if (DecoHeadLen(sec.Records[idx]) < 0)
+        {
+            sec.Records.RemoveAt(idx); sec.Count--; return EditResult.Failed;
+        }
+        int hl = DecoHeadLen(sec.Records[idx]);
+        WriteI32(sec.Records[idx], hl, (int)(tx - (long)baseX));
+        WriteI32(sec.Records[idx], hl + 4, (int)(ty - (long)baseY));
+        created = new DecoEditHandle(el, sec, idx);
+        return EditResult.Done;
+    }
+
+    // Wall/area record: place the leading x,y doubles at an absolute point (same head walk as
+    // TryOffsetShapePos: area leads with a name string, wall with the four geometry doubles).
+    private static bool TryPlaceShapePos(byte[] rec, bool isWall, double ax, double ay)
+    {
+        int p = 0;
+        if (!isWall)
+        {
+            if (p + 4 > rec.Length) return false;
+            int n = ReadI32(rec, p); p += 4;
+            if (n < 0 || p + n > rec.Length) return false;
+            p += n;
+        }
+        if (p + 16 > rec.Length) return false;
+        BitConverter.GetBytes(ax).CopyTo(rec, p);
+        BitConverter.GetBytes(ay).CopyTo(rec, p + 8);
+        return true;
+    }
+
+    // Path record: <i32 nameLen><name><f64 posx><f64 posy><f64 extx><f64 exty><u8 flag>
+    // [if flag==1: <i32 n><n × 6 f64>]<i32>. Move the whole spline so its nominal position lands
+    // on (ax, ay) by shifting the position pair and every anchor p0 by the same delta; the tangent
+    // handles are relative so they stay, and the record length is unchanged (the framed section
+    // therefore stays walk-consistent). Mirrors SceneProjector.GeoReader.TryPath's walk.
+    private static bool TryPlacePathPos(byte[] rec, double ax, double ay)
+    {
+        int p = 0;
+        if (p + 4 > rec.Length) return false;
+        int nameLen = ReadI32(rec, p); p += 4;
+        if (nameLen < 0 || p + nameLen > rec.Length) return false;
+        p += nameLen;
+        if (p + 32 > rec.Length) return false;
+        double x = BitConverter.ToDouble(rec, p), y = BitConverter.ToDouble(rec, p + 8);
+        double dx = ax - x, dy = ay - y;
+        AddF64(rec, p, dx); AddF64(rec, p + 8, dy);          // pos_x, pos_y
+        p += 32;
+        if (p + 1 > rec.Length) return false;
+        int flag = rec[p]; p += 1;
+        if (flag == 1)
+        {
+            if (p + 4 > rec.Length) return false;
+            int cnt = ReadI32(rec, p); p += 4;
+            if (cnt < 0 || cnt > 1_000_000) return false;
+            for (int i = 0; i < cnt; i++)
+            {
+                if (p + 48 > rec.Length) return false;
+                AddF64(rec, p, dx); AddF64(rec, p + 8, dy);   // anchor p0
+                p += 48;
+            }
+        }
+        return true;
+    }
+
+    private static void AddF64(byte[] b, int off, double d)
+        => BitConverter.GetBytes(BitConverter.ToDouble(b, off) + d).CopyTo(b, off);
+
     // ============================================================== TP2 ====
 
     private static EditClipboard? Tp2Copy(Tp2Level tp, object? source)
@@ -376,6 +821,17 @@ public static class EditOps
                 double ax = clip.HasAbs ? clip.AbsX : (layer.Entities.Count > 0 ? layer.Entities[^1].PosX : 0);
                 double ay = clip.HasAbs ? clip.AbsY : (layer.Entities.Count > 0 ? layer.Entities[^1].PosY : 0);
                 var e = new TbEntity { Raw = (byte[])raw.Clone(), PosX = ax + DupOffset, PosY = ay + DupOffset };
+                // Re-read the display fields off the cloned record (name / rotation / mass / facing) so
+                // the paste projects immediately and, crucially, so a pasted entity keeps the record's own
+                // flip flag instead of falling to the un-mirrored path.
+                var eh = EntityFraming.HeadAt(e.Raw, 0, e.Raw.Length);
+                if (eh is not null)
+                {
+                    e.Name = eh.Value.Name;
+                    var edisp = EntityFraming.ReadBody(e.Raw, eh.Value.XyOff, EntityFraming.ExtTb, e.Raw.Length);
+                    e.Flip = edisp.Flip;
+                    if (edisp.HasBody) { e.Rotation = edisp.Rotation; e.Mass = edisp.Mass; e.Priority = edisp.Priority; e.ColorRgba = edisp.ColorRgba; }
+                }
                 // TbCodec.PatchEntityPositions re-derives each entity's chained delta from its
                 // absolute PosX/PosY at encode time, so an appended clone lands correctly and
                 // earlier entities keep their absolute positions (their PosX/PosY are unchanged).

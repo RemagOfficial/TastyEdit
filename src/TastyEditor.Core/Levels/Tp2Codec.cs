@@ -58,7 +58,7 @@ public sealed class Tp2Codec
         {
             string? name = r.Str();
             var sh = new Tp2Shape { Name = name ?? "" };
-            if (sh.Name == "Circle")
+            if (ElementShapes.IsCircleName(sh.Name))
             {
                 sh.IsCircle = true;
                 sh.Cx = r.F64(); sh.Cy = r.F64(); sh.Radius = r.F64();

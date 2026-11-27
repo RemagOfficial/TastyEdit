@@ -31,10 +31,13 @@ public static class EntitySpawn
         detail = null;
         if (model is null) { detail = "no level loaded"; return EditResult.Failed; }
         string name = (type ?? "").Trim();
-        if (!CredibleName(name))
+        bool typed = catalogue?.TypedRecords == true;   // TP2: curated definition names, no underscore rule
+        if (!NameOk(name, typed))
         {
-            detail = "an entity type must be 4-63 printable ASCII characters containing an underscore "
-                   + "(that is what the loader's record head accepts)";
+            detail = typed
+                ? "an entity type must be 1-63 plain characters (this game names its entities like \u201clava\u201d or \u201ctree_oak\u201d)"
+                : "an entity type must be 4-63 plain characters containing an underscore "
+                  + "(only names like that exist in the game's levels)";
             return EditResult.Failed;
         }
 
@@ -68,13 +71,13 @@ public static class EntitySpawn
         int li = Math.Clamp(layer, 0, tb.Layers.Count - 1);
         if (Template(name, cat, tb) is not byte[] tpl)
         {
-            detail = $"no shipped {name} record to copy (this game's entity body is read by the prefab "
-                   + "itself, so a new one needs a real record of its own type)";
+            detail = $"no shipped {name} entity to copy from (this game reads each entity's own type "
+                   + "definition, so a new one has to start from a real one of that type)";
             return EditResult.Failed;
         }
         if (BuildRecord(tpl, name) is not byte[] rec)
         {
-            detail = "the template record does not frame as an entity head; refusing to write it";
+            detail = "the shipped template does not read back as a valid entity; nothing was written";
             return EditResult.Failed;
         }
 
@@ -83,6 +86,7 @@ public static class EntitySpawn
         if (h is not null)
         {
             var disp = EntityFraming.ReadBody(rec, h.Value.XyOff, EntityFraming.ExtTb, rec.Length);
+            e.Flip = disp.Flip;
             if (disp.HasBody) { e.Rotation = disp.Rotation; e.Mass = disp.Mass; e.Priority = disp.Priority; e.ColorRgba = disp.ColorRgba; }
         }
         // TbCodec.PatchEntityPositions re-derives every record's chained delta from its absolute
@@ -107,13 +111,13 @@ public static class EntitySpawn
 
         if (Template(name, cat, el) is not byte[] tpl)
         {
-            detail = $"no shipped {name} record to copy (an f4/f5 entity body is prefab-sized, so a new "
-                   + "one has to start from a real record of that type)";
+            detail = $"no shipped {name} entity to copy from (an f4/f5 entity starts from a real "
+                   + "shipped one of that type, and none exists here)";
             return EditResult.Failed;
         }
         if (BuildRecord(tpl, name) is not byte[] rec)
         {
-            detail = "the template record does not frame as an entity head; refusing to write it";
+            detail = "the shipped template does not read back as a valid entity; nothing was written";
             return EditResult.Failed;
         }
 
@@ -264,8 +268,8 @@ public static class EntitySpawn
     {
         string? from = cat?.ProtoFor(name)?.SourceLevel;
         return from is null
-            ? "record copied from a matching entity in this level"
-            : $"record copied from shipped level {from}";
+            ? "copied from a matching entity in this level"
+            : $"copied from shipped level {from}";
     }
 
     /// <summary>Rebuild a record with a different prefab name: the head's name field is length-prefixed
@@ -297,6 +301,21 @@ public static class EntitySpawn
         foreach (char c in name) if (c < 32 || c > 126) return false;
         return true;
     }
+
+    /// <summary>A plain printable name with no underscore requirement, for the typed-record family
+    /// (TP2) whose definition set (<see cref="Tp2Entities"/>) contains many single-word entities
+    /// (<c>lava</c>, <c>pyramid</c>, <c>sun</c>). Placeability itself is decided by the catalogue's
+    /// <see cref="EntityCatalogue.Knows"/> definition check, which runs right after this.</summary>
+    public static bool PlainName(string name)
+    {
+        if (name.Length < 1 || name.Length > 63) return false;
+        foreach (char c in name) if (c < 32 || c > 126) return false;
+        return true;
+    }
+
+    /// <summary>Family-aware name rule: the raw-span families (Tasty Blue / Forever / Final Bite)
+    /// require the underscore byte-credibility form; the typed family (TP2) only needs a plain name.</summary>
+    public static bool NameOk(string name, bool typed) => typed ? PlainName(name) : CredibleName(name);
 
     private static byte[] Latin1(string s)
     {

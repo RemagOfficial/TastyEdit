@@ -2,6 +2,69 @@
 
 All notable changes to TastyEdit are documented here. The newest release is at the top.
 
+## 1.0.0 — 27 November 2026
+
+The first proper release. One more game, a way to share what you make, and an installer — on top of
+everything 0.9.0-beta could already do.
+
+### New in this version
+
+- **Tasty Planet, the original, is supported** — five games in one editor now: Tasty Planet, Tasty
+  Planet 2: Back for Seconds, Tasty Blue, Tasty Planet Forever and Tasty Planet Final Bite. The
+  first game keeps its levels as plain XML text rather than a `.bin`, so its level files are opened
+  from `<game>\assets\levels\` like the rest of its data; everything else works the way it does for
+  the other four. Its background tilemap can be painted, and its entity types edited in the game's
+  own tables.
+- **Mods.** `Mod ▸ Create mod…` makes a folder for your campaign outside any game install; while a
+  mod is open, your saves go into it as well as where you send them. `Mod ▸ Publish mod as .tpm…`
+  turns that folder into one file you can send to somebody. On the receiving end, **Manage mods**
+  (the start screen) installs a `.tpm` into a game, switches between the mods you have installed
+  and takes them back out — the game's own files are copied aside first, and reverting puts them
+  back exactly as they were.
+- **Rotation and size handles.** Grab the handle on a selected object to turn it, and the ones on
+  its sides to scale it, instead of typing numbers into the panel.
+- **Characters that come in one piece.** In Final Bite and Forever the animals built from a
+  skeleton — the ant, the bedbug, the bear — are now put together the way the game puts them
+  together, so legs and necks join the body they belong to instead of splaying out from it. The
+  same assembly was already done for Tasty Planet 2's skeletal characters.
+- **Every Forever level shows its objects.** Four Mars levels (`mars1_4`, `mars1_5`, `mars1_9`,
+  `mars1_10`) opened with their decorations and walls but no entities at all — the editor could not
+  work out where one object ended and the next began inside those levels, so it drew nothing and
+  gave no warning. Reading that data is fixed for the prefab names Forever actually uses (`h2o`,
+  `bedrock`) and for walls whose shape is saved as a lower-case `circle`, so all 328 of the game's
+  levels now load object-for-object.
+- **A copy is kept before every save into a game folder**, so a change you decide against can still
+  be undone from disk and not just with `Ctrl+Z`.
+- **An installer** (`TastyEdit-Setup-1.0.0.exe`) that puts the program in your Start Menu with one
+  shortcut per game, and offers to make level files open here when you double-click them.
+- **The window says which game you're in**: the title bar and taskbar icon take the colour and mark
+  of the level you have open, and the Start-Menu shortcuts use the same five tiles.
+- A new look: light and dark themes, a toolbar with real icons, a start screen, and wording in the
+  inspector that says what a setting does instead of only its stored name.
+
+### Known limitations
+
+- **No level from scratch yet** — you edit copies of levels that already exist.
+- Four rarely-used numbers inside a Tasty Planet 2 decoration are carried through every edit
+  untouched but can't be changed yet.
+- A few Tasty Planet 2 characters put an outlying part (a horn, a foot) slightly off its body.
+  Bodies, heads, tails and segmented necks line up; it is purely what you see in the editor, and
+  saving is unaffected.
+- Outline objects (walls, areas, water) and markers are drawn in file order, so which one is "on
+  top" can differ from the game in a few spots. Purely a display detail; saving is unaffected.
+- The published executables are unsigned, so Windows SmartScreen interrupts the first run
+  (More info → Run anyway).
+
+### How it's checked
+
+Loading and saving is checked by the editor's own headless test runs, against the levels that are
+installed on the machine — every one of the five games it can find. A level you open and save
+without touching comes out exactly as it went in, and an edit only changes the object you changed.
+Installing and reverting a mod is checked the same way against a throwaway sandbox, never a real
+install. See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+
+---
+
 ## 0.9.0-beta — 24 November 2026
 
 First public beta, released on the 20th anniversary of the original Tasty Planet.

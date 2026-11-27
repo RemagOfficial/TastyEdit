@@ -3,8 +3,11 @@ namespace TastyEditor.Core.Levels;
 public enum WaterFieldKind { Text, Int, Double, Bool }
 
 /// <summary>One named ElementWater field: a stream-order key, the widget kind the inspector
-/// should use, and a display label. Ported from the Python editor's WATER_FIELDS spec.</summary>
-public readonly record struct WaterFieldSpec(string Key, WaterFieldKind Kind, string Label);
+/// should use, a display label, and (R1) a one-line meaning for its tooltip. Several of these
+/// fields are labelled by their position in the file because the shipped data and the engine's
+/// own readers never name them — for those the hint says plainly that the purpose is unknown
+/// rather than inventing one.</summary>
+public readonly record struct WaterFieldSpec(string Key, WaterFieldKind Kind, string Label, string Hint = "");
 
 /// <summary>The named fields of a Tasty Blue <see cref="TbWater"/> in record order, as a
 /// static table shared with the UI (1:1 port of tp2editor.Inspector.WATER_FIELDS). Geometry
@@ -19,30 +22,38 @@ public static class WaterFields
 {
     public static readonly WaterFieldSpec[] All =
     {
-        new("name",      WaterFieldKind.Text,   "name"),
-        new("water_id",  WaterFieldKind.Int,    "water id"),
-        new("center_x",  WaterFieldKind.Double, "center X"),
-        new("center_y",  WaterFieldKind.Double, "center Y"),
-        new("size_w",    WaterFieldKind.Double, "size W"),
-        new("size_h",    WaterFieldKind.Double, "size H"),
-        new("scalar0",   WaterFieldKind.Double, "scalar0"),
-        new("scalar1",   WaterFieldKind.Double, "scalar1"),
-        new("scalar2",   WaterFieldKind.Double, "scalar2"),
-        new("scalar3",   WaterFieldKind.Double, "scalar3"),
-        new("scalar4",   WaterFieldKind.Double, "scalar4"),
-        new("toggle_a",  WaterFieldKind.Bool,   "toggle_a"),
-        new("toggle_b",  WaterFieldKind.Bool,   "toggle_b"),
-        new("toggle_c",  WaterFieldKind.Bool,   "toggle_c"),
-        new("toggle_d",  WaterFieldKind.Bool,   "toggle_d"),
-        new("toggle_e",  WaterFieldKind.Bool,   "toggle_e"),
-        new("toggle_f",  WaterFieldKind.Bool,   "toggle_f"),
-        new("toggle_g",  WaterFieldKind.Bool,   "toggle_g"),
-        new("toggle_h",  WaterFieldKind.Bool,   "toggle_h"),
-        new("int0",      WaterFieldKind.Int,    "int0"),
-        new("flag_bit0", WaterFieldKind.Bool,   "flag_bit0"),
-        new("flag_bit1", WaterFieldKind.Bool,   "flag_bit1"),
-        new("flag_bit2", WaterFieldKind.Bool,   "flag_bit2"),
+        new("name",      WaterFieldKind.Text,   "name", "What the game's own files call this volume of water. Other records can refer to it by this name."),
+        new("water_id",  WaterFieldKind.Int,    "water id", "A number the game uses to group water volumes that should behave as one. Volumes that belong together share it."),
+        new("center_x",  WaterFieldKind.Double, "center X", "Middle of the water box, left to right. Dragging the box in the viewport changes this."),
+        new("center_y",  WaterFieldKind.Double, "center Y", "Middle of the water box, top to bottom. Dragging the box in the viewport changes this."),
+        new("size_w",    WaterFieldKind.Double, "size W", "How wide the water box is."),
+        new("size_h",    WaterFieldKind.Double, "size H", "How tall the water box is."),
+        new("scalar0",   WaterFieldKind.Double, "scalar0", UnknownNumber),
+        new("scalar1",   WaterFieldKind.Double, "scalar1", UnknownNumber),
+        new("scalar2",   WaterFieldKind.Double, "scalar2", UnknownNumber),
+        new("scalar3",   WaterFieldKind.Double, "scalar3", UnknownNumber),
+        new("scalar4",   WaterFieldKind.Double, "scalar4", UnknownNumber),
+        new("toggle_a",  WaterFieldKind.Bool,   "toggle_a", UnknownSwitch),
+        new("toggle_b",  WaterFieldKind.Bool,   "toggle_b", UnknownSwitch),
+        new("toggle_c",  WaterFieldKind.Bool,   "toggle_c", UnknownSwitch),
+        new("toggle_d",  WaterFieldKind.Bool,   "toggle_d", UnknownSwitch),
+        new("toggle_e",  WaterFieldKind.Bool,   "toggle_e", UnknownSwitch),
+        new("toggle_f",  WaterFieldKind.Bool,   "toggle_f", UnknownSwitch),
+        new("toggle_g",  WaterFieldKind.Bool,   "toggle_g", UnknownSwitch),
+        new("toggle_h",  WaterFieldKind.Bool,   "toggle_h", UnknownSwitch),
+        new("int0",      WaterFieldKind.Int,    "int0", UnknownNumber),
+        new("flag_bit0", WaterFieldKind.Bool,   "flag_bit0", UnknownSwitch),
+        new("flag_bit1", WaterFieldKind.Bool,   "flag_bit1", UnknownSwitch),
+        new("flag_bit2", WaterFieldKind.Bool,   "flag_bit2", UnknownSwitch),
     };
+
+    private const string UnknownNumber =
+        "A number the game's water records carry, but neither the shipped files nor the game's own "
+        + "code names it, so what it controls is not known. Left alone unless you are experimenting.";
+
+    private const string UnknownSwitch =
+        "An on/off setting the game's water records carry, but neither the shipped files nor the "
+        + "game's own code names it, so what it switches is not known.";
 
     public static object Get(TbWater w, string key) => key switch
     {

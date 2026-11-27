@@ -15,8 +15,14 @@ Thumbs.db
 /_*.txt
 /_*.json
 /_*.bin
+# Same for the icon work: preview sheets of the generated .ico set are inspected and thrown away,
+# never committed (the shipped icons live under src/TastyEditor.App/icons/).
+/_*.png
 *.log
 __pycache__/
+
+# The installer compiles against publish/, so its own output is build product too.
+installer/Output/
 
 # Nothing game-owned belongs in here: no .bin levels, no extracted assets. The editor
 # reads the player's own install; it ships none of it.

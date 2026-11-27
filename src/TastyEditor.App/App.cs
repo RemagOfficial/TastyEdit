@@ -88,6 +88,41 @@ public sealed class App : Application
             Viewport.Smoke.Tp2AssetsCheck();
             return;
         }
+        // Dev-only: render a few TP2 skeletal characters to _skel_<name>.png for pixel inspection.
+        if (args.Length >= 1 && args[0] == "tp2skel")
+        {
+            Viewport.Smoke.Tp2SkelDump();
+            return;
+        }
+        // Dev-only: prove the Tasty Blue skeletons.bin slice — report entity-name coverage over the stock
+        // levels and render every rig composite to _tb_rig_<name>.png plus _tb_rig_sheet.png.
+        if (args.Length >= 1 && args[0] == "tbskel")
+        {
+            Viewport.Smoke.TbSkelDump();
+            return;
+        }
+        // Dev-only: Forever / Final Bite engine-art port coverage — EngineArt/rig-name counts and per-tier
+        // entity/deco resolution over stock levels (writes _f45_probe.txt).
+        if (args.Length >= 1 && args[0] == "f45probe")
+        {
+            Viewport.Smoke.F45Probe();
+            return;
+        }
+        // Dev-only: render Final Bite rigs to _f5_rig_<name>.png plus _f5_rig_sheet.png. With an
+        // optional second arg it renders just rigs whose name contains that substring, in whatever
+        // placement path they take (crop or affine), for targeted eyeballing.
+        if (args.Length >= 1 && args[0] == "f5rig")
+        {
+            Viewport.Smoke.F5RigDump(args.Length >= 2 ? args[1] : null);
+            return;
+        }
+        // Dev-only: dump every TP2 entity TYPE's mass values and BoxBounds to _tp2scale.txt so the
+        // render-scale law can be fitted offline against entityintersections.xml.
+        if (args.Length >= 1 && args[0] == "tp2scale")
+        {
+            Viewport.Smoke.Tp2ScaleDump();
+            return;
+        }
         // Headless sprite-reassignment write-path proof (S5-5): reassign one entity name and
         // one decoration sprite on stock TP2 levels and prove each edit persists, is re-decode
         // stable, and reverts to the exact original bytes (fully localised). No paths needed.
@@ -131,6 +166,52 @@ public sealed class App : Application
         if (args.Length >= 1 && args[0] == "editops")
         {
             Viewport.Smoke.EditOpsCheck();
+            return;
+        }
+        // Headless R4 element-creation proof (NewRecord): for one stock level per family and every
+        // kind it supports, the untouched level stays byte-identical, a created record grows that kind
+        // by exactly one, re-encodes stable (f4/f5 Counts in lockstep) and — where delete exists —
+        // create-then-delete restores the original bytes. Not-supported kinds are honest skips.
+        if (args.Length >= 1 && args[0] == "createops")
+        {
+            Viewport.Smoke.CreateOpsCheck();
+            return;
+        }
+        // Headless R4 path-editing proof (SceneProjector path API): a whole-path move / add-point /
+        // remove-point on one stock level per family, each re-encoding stable and (raw-span) confined
+        // to the touched record with the section Count still walking.
+        if (args.Length >= 1 && args[0] == "pathops")
+        {
+            Viewport.Smoke.PathOpsCheck();
+            return;
+        }
+        // R5: the Tasty Planet 1 verbatim-XML contract over every shipped level (I1 byte-identical,
+        // every edit class localised + re-decode stable + revert exact, detection clean).
+        if (args.Length >= 1 && args[0] == "tp1check")
+        {
+            Viewport.Smoke.Tp1Check();
+            return;
+        }
+        // R7: the verbatim contract over the shared entity / image tables the entity panel writes
+        // (entitydefs.xml / imagemaps.xml): I1 byte-identical, create + remove restores the bytes,
+        // edits re-decode stable, and a shipped def parses back. In-memory only — writes nothing.
+        if (args.Length >= 1 && args[0] == "tp1tables")
+        {
+            Viewport.Smoke.Tp1TablesCheck();
+            return;
+        }
+        // R6: the mod-system lifecycle proof over a throwaway sandbox (vanilla backup, merge-install,
+        // activate/switch/revert, zip-slip refusal, delta publish, game-mismatch refusal). Self-
+        // contained — needs no game install and writes nothing outside its temp folder.
+        if (args.Length >= 1 && args[0] == "mods")
+        {
+            Viewport.Smoke.ModsCheck();
+            return;
+        }
+        // D7 (R4): run every headless gate in one pass for CI-on-tag, exiting non-zero if any fails.
+        if (args.Length >= 1 && args[0] == "allgates")
+        {
+            System.Environment.ExitCode = Viewport.Smoke.AllGates();
             return;
         }
         // Headless slice-6 multilevel XML proof: load each shipped levels/multilevels/*.xml, prove
@@ -228,7 +309,7 @@ public sealed class App : Application
         // Proof: the entity TYPE catalogue behind the apply-side guard (S-D9) never refuses a type a
         // shipped level uses, and does refuse the names the game would drop (atlas cells, fabricated,
         // case-flipped, suffixed). Read-only, no paths needed.
-        if (args.Length >= 1 && args[0] == "entitydefs")
+        if (args.Length >= 1 && args[0] == "entitydefs")    // copyaudit: dev  (CLI verb, not UI copy)
         {
             Viewport.Smoke.EntityDefsCheck();
             return;
@@ -247,6 +328,23 @@ public sealed class App : Application
         if (args.Length >= 1 && args[0] == "refill")
         {
             Viewport.Smoke.RefillCheck();
+            return;
+        }
+        // R1 copy-convention audit: lex the real string literals out of every App source (comments
+        // skipped, \u escapes decoded) and refuse any of UiText.BannedWords in UI copy, so the
+        // internal vocabulary cleaned out in R1 cannot leak back in through slices R2-R7. Read-only.
+        if (args.Length >= 1 && args[0] == "copyaudit")
+        {
+            Viewport.Smoke.CopyAudit();
+            return;
+        }
+        // Headless R2 transform-handle proof: the knob's turn, the corner grips (uniform, free axes,
+        // entity mass) and the vertex removal each commit through the same operations the gestures
+        // use; every write must stay inside its own record, survive a fresh read, and undo to the
+        // loaded bytes exactly. One sampled level per game. Read-only, no paths needed.
+        if (args.Length >= 1 && args[0] == "handles")
+        {
+            Viewport.Smoke.HandlesCheck();
             return;
         }
         // Proof for the decoration render fix (S-D11): a deco is stretched to its record's world box
@@ -278,7 +376,28 @@ public sealed class App : Application
             return;
         }
 
+        // R7 packaging: the installer's "associate .bin with TastyEdit" task and the uninstaller's
+        // clean-up call these, so the registry layout has exactly one implementation — the one the
+        // File menu already uses — rather than a second copy written in a setup script. Registering
+        // takes the exe path from the process unless one is given (the setup program knows better
+        // where the file ended up than a relative launch does).
+        if (args.Length >= 1 && args[0] == "register-association")
+        {
+            string? exe = args.Length > 1 ? args[1] : Environment.ProcessPath;
+            if (exe is not null) FileAssociation.Register(exe);   // nothing to point at: do nothing
+            return;
+        }
+        if (args.Length >= 1 && args[0] == "unregister-association")
+        {
+            FileAssociation.Unregister();
+            return;
+        }
+
         var app = new App();
+
+        // R3 theme: install the persisted palette (dark unless the config says otherwise) before any
+        // window is built, so the first paint is already themed and the shell can read Theme.* tokens.
+        Theme.Apply(app, RecentFiles.LoadDark());
 
         // Slice-7 error UX: turn any stray crash into the same friendly dialog a handled failure
         // shows, and log it, instead of a silent close or a Windows "has stopped working" box.
@@ -289,11 +408,24 @@ public sealed class App : Application
         };
         System.Threading.Tasks.TaskScheduler.UnobservedTaskException += (s, e) =>
             ErrorUi.Crash(app.MainWindow, e.Exception);
+        // A crash on a background thread (a decode task, a worker) never reaches the dispatcher, so
+        // also route the AppDomain-wide handler through the same report + dialog instead of dying silently.
+        AppDomain.CurrentDomain.UnhandledException += (s, e) =>
+        {
+            if (e.ExceptionObject is Exception ex) ErrorUi.Crash(app.MainWindow, ex);
+        };
 
         // Slice-7 file association / double-click: a level path passed on the command line
         // ("TastyEdit.exe C:\...\level.bin") opens straight away. Only a real existing
         // file is treated as a level; headless subcommands were handled above and return.
         string? startup = args.Length == 1 && System.IO.File.Exists(args[0]) ? args[0] : null;
-        app.Run(new MainWindow(startup));
+
+        // R7: "--game tb" is what a per-game Start-Menu shortcut passes; the window takes it to that
+        // game's level folder. Anything unrecognised is ignored rather than refused.
+        string? startupGame = null;
+        for (int i = 0; i + 1 < args.Length; i++)
+            if (args[i] == "--game") startupGame = args[i + 1];
+
+        app.Run(new MainWindow(startup, startupGame));
     }
 }

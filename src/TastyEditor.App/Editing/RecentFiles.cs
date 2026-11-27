@@ -28,6 +28,41 @@ public sealed class RecentFiles
         set { if (_alwaysSprites == value) return; _alwaysSprites = value; Save(); }
     }
 
+    // R3 theme choice + inspector collapse state live in the same file for the same reason: one
+    // writer owns config.json. Both are read once on Load and written back on every Save.
+    private bool _dark = true;
+
+    // R4 stability: the first-run setup dialog (which only lists detected game folders and never
+    // launches anything) is offered once. Absent from an older config means "not yet seen", so it
+    // shows on the first launch after updating and is dismissed for good when closed.
+    private bool _setupSeen;
+
+    /// <summary>Whether the first-run setup dialog has been dismissed. Persisted; false until seen.</summary>
+    public bool SetupSeen
+    {
+        get => _setupSeen;
+        set { if (_setupSeen == value) return; _setupSeen = value; Save(); }
+    }
+
+    /// <summary>Dark chrome (the default; the viewport canvas is near-black). Persisted; flipping it
+    /// re-themes the running window rather than restarting it.</summary>
+    public bool Dark
+    {
+        get => _dark;
+        set { if (_dark == value) return; _dark = value; Save(); }
+    }
+
+    /// <summary>Inspector group cards the user collapsed (remembered across sessions). A set of stable
+    /// section ids; membership means "start collapsed". Persisted.</summary>
+    public HashSet<string> CollapsedSections { get; private set; } = new();
+
+    /// <summary>Record whether one inspector card is collapsed and persist the whole set.</summary>
+    public void SetCollapsed(string section, bool collapsed)
+    {
+        bool changed = collapsed ? CollapsedSections.Add(section) : CollapsedSections.Remove(section);
+        if (changed) Save();
+    }
+
     private static string ConfigDir => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TastyEdit");
     private static string ConfigPath => Path.Combine(ConfigDir, "config.json");
@@ -42,6 +77,24 @@ public sealed class RecentFiles
     /// <summary>Folder the last opened/saved level lived in (seeds file-dialog InitialDirectory).</summary>
     public string? LastDirectory =>
         Paths.Count > 0 ? Path.GetDirectoryName(Paths[0]) : null;
+
+    /// <summary>Read just the persisted dark/light choice before the UI is built, so the theme is
+    /// already correct when the first window paints (dark when there is no config yet).</summary>
+    public static bool LoadDark()
+    {
+        try
+        {
+            string source = File.Exists(ConfigPath) ? ConfigPath
+                          : File.Exists(LegacyConfigPath) ? LegacyConfigPath : "";
+            if (source.Length == 0) return true;
+            using var doc = JsonDocument.Parse(File.ReadAllText(source));
+            if (doc.RootElement.TryGetProperty("dark", out var dv)
+                && (dv.ValueKind == JsonValueKind.True || dv.ValueKind == JsonValueKind.False))
+                return dv.GetBoolean();
+        }
+        catch { }
+        return true;
+    }
 
     public void Load()
     {
@@ -67,6 +120,20 @@ public sealed class RecentFiles
             if (doc.RootElement.TryGetProperty("alwaysSprites", out var av)
                 && (av.ValueKind == JsonValueKind.True || av.ValueKind == JsonValueKind.False))
                 _alwaysSprites = av.GetBoolean();
+            if (doc.RootElement.TryGetProperty("dark", out var dv)
+                && (dv.ValueKind == JsonValueKind.True || dv.ValueKind == JsonValueKind.False))
+                _dark = dv.GetBoolean();
+            if (doc.RootElement.TryGetProperty("setupSeen", out var sv)
+                && (sv.ValueKind == JsonValueKind.True || sv.ValueKind == JsonValueKind.False))
+                _setupSeen = sv.GetBoolean();
+            if (doc.RootElement.TryGetProperty("collapsed", out var cv) && cv.ValueKind == JsonValueKind.Array)
+            {
+                var set = new HashSet<string>();
+                foreach (var el in cv.EnumerateArray())
+                    if (el.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(el.GetString()))
+                        set.Add(el.GetString()!);
+                CollapsedSections = set;
+            }
         }
         catch { /* corrupt or locked config: start clean, keep the old file for a later look */ }
     }
@@ -107,6 +174,12 @@ public sealed class RecentFiles
                 foreach (var p in Paths) w.WriteStringValue(p);
                 w.WriteEndArray();
                 w.WriteBoolean("alwaysSprites", _alwaysSprites);
+                w.WriteBoolean("dark", _dark);
+                w.WriteBoolean("setupSeen", _setupSeen);
+                w.WritePropertyName("collapsed");
+                w.WriteStartArray();
+                foreach (var s in CollapsedSections) w.WriteStringValue(s);
+                w.WriteEndArray();
                 w.WriteEndObject();
             }
             File.WriteAllText(ConfigPath, System.Text.Encoding.UTF8.GetString(ms.ToArray()));

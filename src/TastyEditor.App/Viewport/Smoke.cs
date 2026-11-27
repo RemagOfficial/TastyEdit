@@ -1,4 +1,5 @@
 using System.IO;
+using System.Text;
 using TastyEditor.App.Assets;
 using TastyEditor.Core.Assets;
 using TastyEditor.Core.Levels;
@@ -11,7 +12,7 @@ namespace TastyEditor.App.Viewport;
 /// that can't see the GUI. `smoke [path...]` prints one line per level; with no paths it
 /// sweeps a representative stock level of each game. This is display-only — it never
 /// touches the byte-exact save path.</summary>
-public static class Smoke
+public static partial class Smoke
 {
     // The stock level folders every gate sweeps. Resolved from the machine's own Steam libraries
     // (or TPE_LEVELS_<GAME>) instead of a fixed path, so the gates run on any install; an
@@ -481,20 +482,45 @@ public static class Smoke
             catch (Exception ex) { fail++; Emit($"FAIL tb: {ex.GetType().Name}: {ex.Message}"); }
         }
 
-        // f5 structural: the opaque entity block splits at its count and yields named crosses.
+        // f5 rotation: the entity block splits at its count and yields named crosses whose
+        // RotationDeg must equal the int32 at xy_off + Rot + ExtF4F5 (the turn), NOT the pad at
+        // xy_off + Rot (always 0). Scans the installed f5 levels for one with rotated entities and
+        // proves the projector reads the relocated word (the S5 f4/f5 rotation bug).
         var f5dir = Defaults.First(d => d.Game == "f5").Dir;
         if (!Directory.Exists(f5dir)) { Emit("SKIP f5: levels dir not installed"); }
         else
         {
             try
             {
-                var lvl = Directory.GetFiles(f5dir, "*.bin").OrderBy(f => f).First();
-                var doc = LevelLoader.Load(lvl);
-                var ec = doc.Scene.Crosses.Where(c => c.Kind == SceneKind.Entity).ToList();
-                int named = ec.Count(c => c.SpriteName is { Length: > 0 });
-                bool ok = ec.Count > 0 && named > 0;
-                Emit($"{(ok ? "OK  " : "FAIL")} f5 structural {Path.GetFileName(lvl),-24}: {ec.Count} entity crosses, {named} named; sample=[{string.Join(",", ec.Take(3).Select(c => c.SpriteName))}]");
-                Count(ok);
+                int checkedFiles = 0, rotatedCrosses = 0, mismatch = 0, padMismatch = 0;
+                string? proofFile = null;
+                foreach (var lvl in Directory.GetFiles(f5dir, "*.bin").OrderBy(f => f))
+                {
+                    checkedFiles++;
+                    var doc = LevelLoader.Load(lvl);
+                    var ec = doc.Scene.Crosses.Where(c => c.Kind == SceneKind.Entity && c.Source is EntityEditHandle).ToList();
+                    foreach (var c in ec)
+                    {
+                        var h = (EntityEditHandle)c.Source!;
+                        var (heads, ok) = EntityFraming.SplitRecords(h.Sec.Block, 0, h.Sec.Count, h.Lv.Game);
+                        if (!ok || h.RecIndex < 0 || h.RecIndex >= heads.Count) continue;
+                        int xo = heads[h.RecIndex].XyOff;
+                        int rotNew = xo + EntityFraming.Rot + EntityFraming.ExtF4F5 + 4 <= h.Sec.Block.Length
+                            ? BitConverter.ToInt32(h.Sec.Block, xo + EntityFraming.Rot + EntityFraming.ExtF4F5) : 0;
+                        int rotOld = xo + EntityFraming.Rot + 4 <= h.Sec.Block.Length
+                            ? BitConverter.ToInt32(h.Sec.Block, xo + EntityFraming.Rot) : 0;
+                        if (Math.Abs(c.RotationDeg - (-rotNew / 100.0)) > 1e-6) mismatch++;
+                        if (rotNew != 0)
+                        {
+                            rotatedCrosses++;
+                            if (rotOld != 0) padMismatch++;   // +28 should be the always-0 pad
+                        }
+                    }
+                    if (rotatedCrosses > 0) { proofFile = Path.GetFileName(lvl); break; }
+                }
+                bool okf = rotatedCrosses > 0 && mismatch == 0 && padMismatch == 0;
+                Emit($"{(okf ? "OK  " : "FAIL")} f5 rotation {proofFile ?? "(none rotated)",-24}: {rotatedCrosses} rotated crosses over {checkedFiles} file(s); projector/raw(+36) mismatches={mismatch}, pad(+28) non-zero={padMismatch}");
+                Count(okf);
             }
             catch (Exception ex) { fail++; Emit($"FAIL f5: {ex.GetType().Name}: {ex.Message}"); }
         }
@@ -619,10 +645,10 @@ public static class Smoke
     /// WPF atlas decode) — over the install's own cells and requires a finite-sized bitmap
     /// with a game-accurate SpriteScale (proves decode + size math, no window), and (b)
     /// scans a sample of stock levels counting how many projected entity/deco marks
-    /// resolve to a real sprite. Tasty Blue prey entities resolve (names are cell keys);
-    /// Forever / Final Bite entity heads carry a per-level theme token that is not a cell
-    /// key, so they degrade to crosses — exactly the Python editor's placeholder-dot
-    /// behaviour and the plan's accepted fallback. Display-only; never writes.</summary>
+    /// resolve to a real sprite. Since the engine-art port all three installs resolve entity
+    /// theme tokens through the scanned per-exe entity → art table (F45Probe reports the
+    /// per-tier split); before it Forever / Final Bite entity heads carried a per-level theme
+    /// token that is not a cell key and degraded to crosses. Display-only; never writes.</summary>
     public static void SpritesCheck()
     {
         using var log = new StreamWriter("_sprites.txt", append: false) { AutoFlush = true };
@@ -762,6 +788,42 @@ public static class Smoke
         "richouse", "planet_gas", "grape_olive_1",
     };
 
+    // All 61 TP2 skeletal characters (multi-part entities), enumerated by scanning animationdefs.xml
+    // for `<base>_stand_*` / `<base>_walk_*` part groups. Each must assemble (>=2 part layers) instead
+    // of showing one body fragment. Proves the R8 TP2 multi-part entity-sprite slice.
+    private static readonly string[] Tp2SkeletalCases =
+    {
+        "ala", "alberta", "ant", "aphid", "bacteria", "ballista", "bambi", "butt", "cobra", "cory", "cow",
+        "croc", "drag", "egypt_noble", "egypt_peasant", "egypt_soldier", "euo", "frog", "future_person",
+        "grasshop", "hippo", "horse", "jack", "japan_ninja", "japan_samurai", "japanmonster", "larva",
+        "lion", "maia", "mau", "modern_sciold", "modern_sciyoung", "moth", "nano", "nanobot", "noth",
+        "ory", "pachyr", "para", "poss", "rat", "roman_glad", "roman_man", "roman_soldier", "roman_woman",
+        "scar", "shrew", "simon", "snail", "steg", "struth", "styg", "styrac", "tank", "ter", "tricer",
+        "troo", "turt", "tyran", "ufo", "worm",
+    };
+
+    // The names a level actually writes: full species + level set, abbreviated stem hidden in the
+    // exe's entity-def table. These are the entities that drew bare Xs before the stem lookup, so
+    // each must resolve through the alias/suffix trim to the same assembly as its base.
+    private static readonly string[] Tp2SkeletalLevelNames =
+    {
+        "tyrannosaurus_dino1", "tyrannosaurus_dino2", "triceratops_dino1", "maiasaura_dino1",
+        "maiasaura_dino2", "alamosaurus_dino1", "albertosaurus_dino1", "stegoceras_dino1",
+        "stygimoloch_dino1", "styracosaurus_dino1", "oryctodromeus_dino1", "pachyrhinosaurus_dino1",
+        "parasaurolophus_dino1", "corythosaurus_dino1", "bambiraptor_dino1", "nanotyrannus_dino1",
+        "nothronychus_dino1", "struthiomimus_dino1", "troodon_dino1", "euoplocephalus_dino1",
+        "termite_dino1", "grasshopper_dino1", "dragonfly_dino1", "butterfly1_dino1", "scarab_egypt1",
+        "jackal", "possum", "turtle", "ant_dino1", "aphid_dino1", "larva_dino1", "snail_dino1",
+        "croc_egypt1", "hippo_egypt1", "horse_egypt1", "mau_egypt1", "egypt_noble_egypt1",
+        "egypt_peasant_egypt1", "egypt_soldier_egypt1", "egypt_soldier_egypt2", "modern_sciyoung_lab1",
+        "roman_man_walk_arm_upper", "egypt_noble_walk_arm_upper",
+        // Types with no art of their own, registered by the exe onto another entity's rig (ArtEntity):
+        // they must assemble that rig rather than draw a cross.
+        "agomphus_dino1", "agomphus_dino2", "alphadon_dino1", "cimolestes_dino1", "cimolestes_dino2",
+        "deinosuchus_dino1", "deinosuchus_dino2", "watusi_egypt1", "watusi_egypt2",
+        "locust_egypt1", "mau_kitten_egypt1", "ant_explosive1",
+    };
+
     /// <summary>Headless TP2 asset-cascade dump (S5-7). Loads the Back for Seconds resolver
     /// and writes a resolution <c>name\tsignature</c> table (<c>_tp2_cs.txt</c>) for every
     /// atlas cell, curated cascade case and real level entity/deco name, under a neutral white
@@ -790,13 +852,20 @@ public static class Smoke
             var names = new SortedSet<string>(StringComparer.Ordinal);
             foreach (var cn in res.CellNames) names.Add(cn);
             foreach (var c in Tp2CascadeCases) names.Add(c);
+            foreach (var c in Tp2SkeletalCases) names.Add(c);
+            foreach (var c in Tp2SkeletalLevelNames) names.Add(c);
 
-            int sample = Math.Min(levels.Length, 40);
-            foreach (var lvl in levels.Take(sample))
+            // Every stock level, not a 40-level sample: the install ships 166, so an entity type that
+            // only appears in an unsampled one (the maple leaves the user reported) drew as a cross
+            // while this gate stayed green. Undecoded levels are counted, so a silent skip cannot hide
+            // names again.
+            int decoded = 0, undecoded = 0;
+            foreach (var lvl in levels)
             {
                 try
                 {
-                    if (LevelLoader.Load(lvl).Model is not Tp2Level tp) continue;
+                    if (LevelLoader.Load(lvl).Model is not Tp2Level tp) { undecoded++; continue; }
+                    decoded++;
                     foreach (var layer in tp.Layers)
                     {
                         foreach (var e in layer.Entities)
@@ -805,16 +874,18 @@ public static class Smoke
                             if (!string.IsNullOrEmpty(nm)) names.Add(nm!);
                     }
                 }
-                catch { /* a level that fails to decode just contributes no names */ }
+                catch { undecoded++; }   /* a level that fails to decode contributes no names */
             }
+            Emit($"levels: decoded={decoded}/{levels.Length} undecoded={undecoded}");
 
             var white = new byte[] { 255, 255, 255, 255 };
             int resolved = 0;
+            var unresolvedNames = new List<string>();
             using (var outw = new StreamWriter("_tp2_cs.txt", append: false))
                 foreach (var n in names)
                 {
                     var sig = res.Signature(n, white);
-                    if (sig != "None") resolved++;
+                    if (sig != "None") resolved++; else unresolvedNames.Add(n);
                     outw.Write(n); outw.Write('\t'); outw.WriteLine(sig);
                 }
 
@@ -850,10 +921,176 @@ public static class Smoke
             }
             Emit($"render: sprites={rendered} tinted={tinted}/5 thumbs={thumbs}/12 first=[{rsample}]");
 
-            bool ok = res.CellCount > 0 && resolved > 0 && rendered > 0 && tinted >= 4 && thumbs > 0;
+            // R8 skeletal assembly: every curated character and every real level type name must
+            // resolve to a multi-part plan (>=2 layers) and render a real bitmap. A single-body
+            // fallback (<2 layers) is a failure.
+            int skelPlans = 0, skelRendered = 0; var skelBad = new List<string>();
+            // The assembled canvas must land on the engine's own natwidth/natheight for every case that
+            // has a def. This is what proves the part-placement convention (a part mirrored about its
+            // canvas centre instead of its pivot blew these boxes up 35% on average, ala by 79%).
+            int natTot = 0, covTot = 0; var natBad = new List<string>();
+            foreach (var c in Tp2SkeletalCases.Concat(Tp2SkeletalLevelNames))
+            {
+                var plan = res.BuildPlan(c, white, 0);
+                if (plan is { IsSkeletal: true } && plan.Ops.Count >= 2) skelPlans++;
+                else { skelBad.Add($"{c}(plan={(plan is null ? "null" : plan.IsSkeletal ? plan.Ops.Count + "L" : "single")})"); continue; }
+                if (ss.TryGet(c, 0, white, out _, out int sw, out int sh, out _, out _, out _))
+                {
+                    if (sw <= 0 || sh <= 0) skelBad.Add($"{c}(render)");
+                    else skelRendered++;
+                }
+                else skelBad.Add($"{c}(render)");
+                if (plan is not null && res.NatBox(c) is (double nw, double nh, double cv))
+                {
+                    natTot++;
+                    if (cv > 0 && cv < 1) covTot++;
+                    double ew = Math.Abs(plan.CanvasW - nw) / nw, eh = Math.Abs(plan.CanvasH - nh) / nh;
+                    if (ew > 0.25 || eh > 0.25)
+                        natBad.Add($"{c} {plan.CanvasW}x{plan.CanvasH} vs nat {nw:0}x{nh:0} ({ew * 100:0}%/{eh * 100:0}%)");
+                }
+            }
+            int skelTotal = Tp2SkeletalCases.Length + Tp2SkeletalLevelNames.Length;
+            Emit($"skeletal: plans={skelPlans}/{skelTotal} rendered={skelRendered} bad=[{string.Join(" ", skelBad.Take(12))}]");
+            Emit($"natbox: agree={natTot - natBad.Count}/{natTot} coverage<1={covTot}/{natTot} worst=[{string.Join(" ", natBad.Take(8))}]");
+
+            // Every name the install's levels actually place must reach real art: an unresolved name is
+            // an entity the viewport draws as a placeholder, which is the defect this gate exists to
+            // catch. `resolved > 0` used to pass with 41 names missing, so the count is now load-bearing.
+            bool ok = res.CellCount > 0 && resolved == names.Count && rendered > 0 && tinted >= 4
+                      && thumbs > 0
+                      && skelPlans == skelTotal && skelRendered == skelPlans && natBad.Count == 0;
+            if (names.Count != resolved)
+                foreach (var n in unresolvedNames.Take(40)) Emit($"  UNRESOLVED {n}");
             Emit($"{(ok ? "TP2 ASSETS GREEN" : "TP2 ASSETS FAILURES")} (cascade {resolved}/{names.Count}, render {rendered}, tinted {tinted}/5, thumbs {thumbs})");
         }
         catch (Exception ex) { Emit($"FAIL tp2: {ex.GetType().Name}: {ex.Message}"); Emit("TP2 ASSETS FAILURES"); }
+    }
+
+    /// <summary>Dev-only visual verification for the R8 TP2 skeletal assembly: renders skeletal
+    /// characters through the real WPF pixel path, writes each built sprite to
+    /// <c>_skel_&lt;name&gt;.png</c> and a labelled contact sheet to <c>_skel_sheet.png</c>, so an agent can
+    /// inspect the assembled pixels (rotation sign, offsets, z-order, canvas vs the engine's own nat
+    /// box) without a window. Read-only; touches no level bytes.</summary>
+    public static void Tp2SkelDump()
+    {
+        using var log = new StreamWriter("_tp2skel.txt", append: false) { AutoFlush = true };
+        void Emit(string s) { Console.WriteLine(s); log.WriteLine(s); }
+        var (game, dir) = Defaults.First(d => d.Game == "tp2");
+        var levels = Directory.GetFiles(dir, "*.bin").OrderBy(f => f).ToArray();
+        var root = Tp2AssetsRoot.ForLevel(levels[0]);
+        var res = root is null ? null : Tp2SpriteResolver.TryLoad(root);
+        if (res is null) { Emit("FAIL: resolver null"); return; }
+        var ss = new Tp2SpriteSource(res);
+        var white = new byte[] { 255, 255, 255, 255 };
+        var items = new List<(string Cap, System.Windows.Media.Imaging.BitmapSource Img)>();
+        foreach (var n in new[] { "ala", "cobra", "cow", "rat", "modern_sciyoung", "lion", "future_person", "cory",
+                                   "tyrannosaurus_dino1", "triceratops_dino1", "maiasaura_dino1",
+                                   "styracosaurus_dino1", "egypt_soldier_egypt1", "termite_dino1",
+                                   "roman_man", "ant", "watusi_egypt1", "agomphus_dino1", "locust_egypt1",
+                                   "deinosuchus_dino1", "mau_kitten_egypt1", "goo_enemy_future1",
+                                   // The names the widened corpus turned up: each was an X before the
+                                   // alias / trim / pose-less-group work, so their pixels need eyes.
+                                   "hoverguy_future1", "mouse_japan1", "ninja_japan1", "samurai_japan1",
+                                   "future_tank_1", "scientist_old_lab2", "roman_glad_rome1", "lion_rome1",
+                                   "rat_rome1", "hippo_baby1", "simon_labfarattack", "ballista_rome1",
+                                   "hovercar_float1", "amoeba1_future1", "vacuum_future1", "uranus_future1",
+                                   "shuttlecraft_fight1", "stoneblock1_pushable", "brain_watch1",
+                                   "laserbolt_tank2", "future_person_blue_1", "roman_soldier_rome1",
+                                   // The plain animal beside its armed variant: only the `_future` types
+                                   // carry the Laser Ant / Laser Rat / Laser Simon gun.
+                                   "ant_dino1", "ant_future1", "rat_future1", "simon_future1" })
+        {
+            if (!ss.TryGet(n, 0, white, out var img, out int w, out int h, out _, out _, out _))
+            { Emit($"{n}: NO SPRITE"); continue; }
+            var enc = new System.Windows.Media.Imaging.PngBitmapEncoder();
+            enc.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(img));
+            using var fs = File.Create($"_skel_{n}.png");
+            enc.Save(fs);
+            // The engine's own assembled box, so a caption can show canvas-vs-nat at a glance.
+            var nat = res.NatBox(n);
+            string pct(double got, double want) => (want > 0 ? (got - want) / want * 100 : 0).ToString("+0;-0;0", System.Globalization.CultureInfo.InvariantCulture);
+            string box = nat is (double nw, double nh, double cv)
+                ? $" nat={nw:0}x{nh:0} cov={cv:0.###} ({pct(w, nw)}%/{pct(h, nh)}%)"
+                : " nat=-";
+            Emit($"{n}: {w}x{h}{box}");
+            items.Add(($"{n}  {w}x{h}" + (nat is (double nw2, double nh2, double cv2)
+                ? $"  nat {nw2:0}x{nh2:0} cov {cv2:0.###}" : ""), img));
+        }
+
+        // Contact sheet: uniform-fit each sprite in a grey cell (so alpha is visible) with its caption.
+        const double CW = 330, CH = 250, CAP = 30, GAP = 12;
+        int cols = 4, rows = (items.Count + cols - 1) / cols;
+        double W = cols * CW + (cols + 1) * GAP, H = rows * (CH + CAP) + (rows + 1) * GAP;
+        var dv = new System.Windows.Media.DrawingVisual();
+        using (var dc = dv.RenderOpen())
+        {
+            dc.DrawRectangle(new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(46, 46, 54)),
+                             null, new System.Windows.Rect(0, 0, W, H));
+            var typeface = new System.Windows.Media.Typeface("Segoe UI");
+            var brush = System.Windows.Media.Brushes.White;
+            for (int i = 0; i < items.Count; i++)
+            {
+                double x = GAP + (i % cols) * (CW + GAP), y = GAP + (i / cols) * (CH + CAP + GAP);
+                var im = items[i].Img;
+                double s = Math.Min((CW - 8) / im.PixelWidth, (CH - 8) / im.PixelHeight);
+                double dw = im.PixelWidth * s, dh = im.PixelHeight * s;
+                dc.DrawImage(im, new System.Windows.Rect(x + (CW - dw) / 2, y + (CH - dh) / 2, dw, dh));
+                dc.DrawText(new System.Windows.Media.FormattedText(items[i].Cap, System.Globalization.CultureInfo.InvariantCulture,
+                    System.Windows.FlowDirection.LeftToRight, typeface, 12, brush, 1.0),
+                    new System.Windows.Point(x + 4, y + CH + 4));
+            }
+        }
+        var sheet = new System.Windows.Media.Imaging.RenderTargetBitmap((int)W, (int)H, 96, 96,
+            System.Windows.Media.PixelFormats.Pbgra32);
+        sheet.Render(dv);
+        var sheetEnc = new System.Windows.Media.Imaging.PngBitmapEncoder();
+        sheetEnc.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(sheet));
+        using (var fs = File.Create("_skel_sheet.png")) sheetEnc.Save(fs);
+        Emit($"sheet: {items.Count} tiles -> _skel_sheet.png");
+        Emit("TP2 SKEL DUMP DONE");
+    }
+
+    /// <summary>Measurement dump for the TP2 render-scale law: for every entity TYPE in every stock
+    /// level, the distinct <c>mass</c> values and the raw <c>BoxBounds</c> quads (centiunits, present only
+    /// when the record carries a box). Joined offline against entityintersections.xml natwidth /
+    /// natheight / coverage, this decides whether an entity's world footprint tracks its mass (and over
+    /// which area) or is a constant pixels-per-world-unit. Read-only.</summary>
+    public static void Tp2ScaleDump()
+    {
+        using var log = new StreamWriter("_tp2scale.txt", append: false) { AutoFlush = true };
+        void Emit(string s) { log.WriteLine(s); }
+        var (game, dir) = Defaults.First(d => d.Game == "tp2");
+        var counts = new SortedDictionary<string, int>(StringComparer.Ordinal);
+        var masses = new Dictionary<string, SortedSet<string>>(StringComparer.Ordinal);
+        var boxes = new Dictionary<string, SortedSet<string>>(StringComparer.Ordinal);
+        foreach (var lvl in Directory.GetFiles(dir, "*.bin").OrderBy(f => f))
+        {
+            Tp2Level? tp;
+            try { tp = LevelLoader.Load(lvl).Model as Tp2Level; } catch { continue; }
+            if (tp is null) continue;
+            foreach (var l in tp.Layers)
+                foreach (var e in l.Entities)
+                {
+                    if (string.IsNullOrEmpty(e.Type)) continue;
+                    var k = e.Type!;
+                    counts[k] = counts.GetValueOrDefault(k) + 1;
+                    var ms = masses.TryGetValue(k, out var m0) ? m0 : new SortedSet<string>();
+                    if (ms.Count < 8) ms.Add(e.Mass.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture));
+                    masses[k] = ms;
+                    if (e.HasBox == 0) continue;
+                    var bs = boxes.TryGetValue(k, out var b0) ? b0 : new SortedSet<string>();
+                    if (bs.Count < 6) bs.Add(string.Join(",", e.BoxBounds));
+                    boxes[k] = bs;
+                }
+        }
+        foreach (var (name, n) in counts)
+        {
+            var ms = masses.TryGetValue(name, out var m) ? m : new SortedSet<string>();
+            var bs = boxes.TryGetValue(name, out var b) ? b : new SortedSet<string>();
+            Emit($"{name}\t{n}\t{string.Join("|", ms)}\t{string.Join(";", bs)}");
+        }
+        int ntypes = counts.Count;
+        Console.WriteLine($"tp2scale: {ntypes} types -> _tp2scale.txt");
     }
 
     // type 0 inherits the previous tile; type 1 -> TileTypes[Cell]; type 2 -> inline String
@@ -3056,6 +3293,391 @@ public static class Smoke
     private static int KindLayerCount(LevelDoc doc, SceneKind kind, int layer) =>
         SceneProjector.Project(doc.Model).Crosses.Count(c => c.Kind == kind && c.Layer == layer);
 
+    // -------------------------------------------- R4 element creation ------
+
+    /// <summary>Headless R4 proof of <see cref="TastyEditor.Core.Levels.EditOps.NewRecord"/> across
+    /// all four families. For one stock level per game it asserts the untouched level is byte-exact
+    /// (I1), then for every kind the family can create it appends a fresh default record centred on
+    /// the level bounds and checks: that kind's projected count grows by exactly one (I3 — no
+    /// collateral to any other record), the result re-encodes stable, f4/f5 section Counts stay in
+    /// lockstep, and — for a kind the delete path supports — removing the new record restores the
+    /// loaded bytes exactly. A kind a family has no storage for (TP2 area / water, f4/f5 water) or a
+    /// raw-span kind with no shipped record to clone is an honest skip, never an invented byte. Writes
+    /// nothing to disk.</summary>
+    public static void CreateOpsCheck()
+    {
+        using var log = new StreamWriter("_createops.txt", append: false) { AutoFlush = true };
+        void Emit(string line) { Console.WriteLine(line); log.WriteLine(line); }
+        int pass = 0, skip = 0, fail = 0;
+
+        var kinds = new[] { SceneKind.Wall, SceneKind.Area, SceneKind.Water, SceneKind.Path, SceneKind.Deco };
+
+        foreach (var (game, dir) in Defaults)
+        {
+            if (!Directory.Exists(dir)) { Emit($"SKIP {game}: no levels dir"); continue; }
+            LevelDoc? doc = null; string? level = null;
+            foreach (var f in Directory.GetFiles(dir, "*.bin").OrderBy(x => x).Take(60))
+            {
+                try { var d = LevelLoader.Load(f); if (d.Encode().AsSpan().SequenceEqual(d.Original)) { doc = d; level = f; break; } }
+                catch { }
+            }
+            if (doc is null) { fail++; Emit($"{game}: FAIL no byte-exact stock level"); continue; }
+            Emit($"{game}: {Path.GetFileName(level!)}");
+
+            foreach (var kind in kinds)
+            {
+                var (ok, note) = TestCreate(kind, doc.Original, doc);
+                switch (ok)
+                {
+                    case true: pass++; Emit($"  OK   {kind,-6} {note}"); break;
+                    case false: fail++; Emit($"  FAIL {kind,-6} {note}"); break;
+                    default: skip++; Emit($"  (skip {kind,-6} {note})"); break;
+                }
+            }
+        }
+
+        Emit("");
+        Emit($"CREATE OPS: {pass} pass, {fail} fail, {skip} skip");
+        Emit(fail == 0 && pass > 0 ? "CREATE OPS GREEN" : "CREATE OPS FAILURES");
+    }
+
+    // (true) created + verified; (false) a real failure; (null) an honest not-supported skip.
+    private static (bool?, string) TestCreate(SceneKind kind, byte[] original, LevelDoc fresh)
+    {
+        var doc = LevelLoader.Load(fresh.Path);
+        var b = SceneProjector.Project(doc.Model).Bounds;
+        var at = b.IsEmpty ? new PointD(400, 400) : new PointD((b.Left + b.Right) / 2, (b.Top + b.Bottom) / 2);
+        int layerCount = LayerCount(doc.Model);
+        int before = CountRecords(doc.Model, kind);
+
+        // A raw-span family clones a shipped record, so a given layer may hold none of a kind
+        // (honest NotSupported) while a later one does; try each layer before declaring a skip.
+        // The typed families create on the first layer that accepts them.
+        int usedLayer = -1; object? created = null;
+        for (int li = 0; li < layerCount; li++)
+        {
+            var r = TastyEditor.Core.Levels.EditOps.NewRecord(doc.Model, kind, li, at, out created, null);
+            if (r == TastyEditor.Core.Levels.EditResult.NotSupported) continue;
+            if (r != TastyEditor.Core.Levels.EditResult.Done) return (false, $"NewRecord={r} @layer{li}");
+            usedLayer = li;
+            break;
+        }
+        if (usedLayer < 0) return (null, "family/level has no create path for this kind");
+
+        int after = CountRecords(doc.Model, kind);
+        if (after != before + 1) return (false, $"record count {before}->{after}, expected +1");
+
+        byte[] enc = doc.Encode();
+        bool stable = doc.Profile.Codec.Encode(doc.Profile.Decode(enc)).AsSpan().SequenceEqual(enc);
+        if (!stable) return (false, "re-encode not stable");
+        if (doc.Model is ElementLevel el)
+        {
+            string? bad = CheckLockstep(el);
+            if (bad is not null) return (false, $"lockstep: {bad}");
+        }
+
+        // Strong I3 (only-diff) proof for kinds the delete path supports: remove the exact record
+        // just created (NewRecord hands back its source / edit handle) and the file must return to
+        // the loaded bytes. Path has no delete op, so it rests on count + stability + lockstep.
+        bool delSupported = kind is SceneKind.Wall or SceneKind.Area or SceneKind.Water or SceneKind.Deco;
+        if (delSupported)
+        {
+            if (created is null) return (false, "NewRecord returned no created source");
+            var del = TastyEditor.Core.Levels.EditOps.Delete(doc.Model, created);
+            if (del != TastyEditor.Core.Levels.EditResult.Done) return (false, $"delete-back={del}");
+            if (!doc.Encode().AsSpan().SequenceEqual(original)) return (false, $"create+delete did not restore: {ByteDiff(original, doc.Encode())}");
+        }
+        return (true, $"+1 @({Math.Round(at.X)},{Math.Round(at.Y)}) L{usedLayer} stable{(delSupported ? " +byte-restore" : "")}");
+    }
+
+    private static int LayerCount(object model) => model switch
+    {
+        TbLevel tb => tb.Layers.Count,
+        Tp2Level tp => tp.Layers.Count,
+        ElementLevel el => el.Layers.Count,
+        _ => 0,
+    };
+
+    // Structural record count of a kind across every layer — the honest backing-store proof that a
+    // create appended exactly one record. Projection can hide a degenerate path (a spline that
+    // draws no segment), so the byte-level record list, not the drawn primitives, is the invariant.
+    private static int CountRecords(object model, SceneKind kind)
+    {
+        int n = 0;
+        switch (model)
+        {
+            case TbLevel tb:
+                foreach (var l in tb.Layers) n += kind switch
+                {
+                    SceneKind.Wall => l.Walls.Count, SceneKind.Area => l.Areas.Count,
+                    SceneKind.Water => l.Waters.Count, SceneKind.Path => l.Paths.Count,
+                    SceneKind.Deco => l.Decos.Count, SceneKind.Entity => l.Entities.Count, _ => 0,
+                };
+                break;
+            case Tp2Level tp:
+                foreach (var l in tp.Layers) n += kind switch
+                {
+                    SceneKind.Wall => l.Walls.Count, SceneKind.Path => l.Paths.Count,
+                    SceneKind.Deco => l.Decos.Count, SceneKind.Entity => l.Entities.Count, _ => 0,
+                };
+                break;
+            case ElementLevel el:
+                string game = el.SectionsPerLayer >= 8 ? "f5" : "f4";
+                int idx = ElemSectionIdx(game, kind);
+                if (idx >= 0) foreach (var layer in el.Layers)
+                    if (idx < layer.Count && !layer[idx].Opaque) n += layer[idx].Records.Count;
+                break;
+        }
+        return n;
+    }
+
+    // Mirrors EditOps/SceneProjector's per-family element section layout (f5 wall0/area2/path3/
+    // deco6; f4 wall0/area1/path2/deco5; no create storage for water / pointlist).
+    private static int ElemSectionIdx(string game, SceneKind kind) => (game, kind) switch
+    {
+        ("f5", SceneKind.Wall) => 0, ("f5", SceneKind.Area) => 2, ("f5", SceneKind.Path) => 3, ("f5", SceneKind.Deco) => 6,
+        ("f4", SceneKind.Wall) => 0, ("f4", SceneKind.Area) => 1, ("f4", SceneKind.Path) => 2, ("f4", SceneKind.Deco) => 5,
+        _ => -1,
+    };
+
+    // Compact byte-diff summary for a failed create+delete-restore assertion.
+    private static string ByteDiff(byte[] a, byte[] b)
+    {
+        var rep = SaveReport.Compare(a, b);
+        return $"{rep.BytesChanged}b @{rep.FirstDiff}..{rep.LastDiff}, size {a.Length}->{b.Length}";
+    }
+
+    /// <summary>D7 (R4 stability checklist): bundle every headless gate behind one command for a
+    /// CI-on-tag release run. Each gate already prints its own one-word GREEN / FAILURES verdict;
+    /// this runs them in order, tees their live output straight through to the console, and turns any
+    /// FAILURES (or a decode ERROR surfaced by the projection sweep) into a non-zero exit so the whole
+    /// release checklist is one `allgates` invocation instead of eleven. It adds no assertions of its
+    /// own — it is purely the aggregator. Returns the count of gates that did not come back green.</summary>
+    public static int AllGates()
+    {
+        var gates = new (string Name, Action Run)[]
+        {
+            ("copyaudit", CopyAudit),
+            ("smoke", () => Run(null)),
+            ("savecheck", () => SaveCheck(null)),
+            ("polycheck", () => PolyCheck(null)),
+            ("watercheck", () => WaterCheck(null)),
+            ("editops", EditOpsCheck),
+            ("createops", CreateOpsCheck),
+            ("pathops", PathOpsCheck),
+            ("handles", HandlesCheck),
+            ("fields", FieldsCheck),
+            ("tp2fields", Tp2FieldsCheck),
+            ("tp1check", Tp1Check),
+            ("mods", ModsCheck),
+        };
+
+        var real = Console.Out;
+        var verdicts = new List<string>();
+        int notGreen = 0;
+        foreach (var (name, run) in gates)
+        {
+            var buf = new StringBuilder();
+            real.WriteLine();
+            real.WriteLine($"──────── {name} ────────");
+            Console.SetOut(new TeeWriter(real, buf));
+            try { run(); }
+            catch (Exception ex)
+            {
+                Console.SetOut(real);
+                buf.AppendLine($"gate threw {ex.GetType().Name}: {ex.Message}");
+                real.WriteLine($"  {name} threw {ex.GetType().Name}: {ex.Message}");
+            }
+            finally { Console.SetOut(real); }
+
+            string text = buf.ToString();
+            // A gate fails only on its terminal verdict line ("... FAILURES") or a per-level decode
+            // ERROR; a machine missing one game install reports SKIP, which is honest, not a failure.
+            bool failed = text.Contains("FAILURES") || text.Contains("ERROR ");
+            if (failed) notGreen++;
+            verdicts.Add($"{(failed ? "FAIL" : "PASS")}  {name}");
+        }
+
+        real.WriteLine();
+        real.WriteLine("===== ALL GATES =====");
+        foreach (var v in verdicts) real.WriteLine("  " + v);
+        real.WriteLine(notGreen == 0
+            ? $"ALL GATES GREEN ({gates.Length})"
+            : $"ALL GATES FAILURES ({notGreen}/{gates.Length} not green)");
+        return notGreen;
+    }
+
+    // Forwards every write to the live console while also collecting it, so AllGates can read a
+    // gate's verdict without hiding its output from whoever is watching the run.
+    private sealed class TeeWriter : TextWriter
+    {
+        private readonly TextWriter _live;
+        private readonly StringBuilder _buf;
+        public TeeWriter(TextWriter live, StringBuilder buf) { _live = live; _buf = buf; }
+        public override Encoding Encoding => Encoding.UTF8;
+        public override void Write(char value) { _live.Write(value); _buf.Append(value); }
+        public override void Write(string? value) { _live.Write(value); _buf.Append(value); }
+        public override void Write(char[] buffer, int index, int count) { _live.Write(buffer, index, count); _buf.Append(buffer, index, count); }
+    }
+
+    /// <summary>Headless R4 path-editing proof (SceneProjector path API). For one stock level per
+    /// family that owns an editable path, from a fresh load each time: a whole-path move shifts every
+    /// anchor by exactly the delta, an add grows the anchor list by one on a chosen segment, a remove
+    /// shrinks it by one (never below two). Every op re-encodes stable; for the raw-span (f4/f5) family
+    /// the edit stays inside the touched path record (untouched records byte-identical, I1/I3) and the
+    /// section Count re-walks (lockstep). Never writes.</summary>
+    public static void PathOpsCheck()
+    {
+        using var log = new StreamWriter("_pathops.txt", append: false) { AutoFlush = true };
+        void Emit(string line) { Console.WriteLine(line); log.WriteLine(line); }
+        int pass = 0, skip = 0, fail = 0;
+
+        foreach (var (game, dir) in Defaults)
+        {
+            if (!Directory.Exists(dir)) { Emit($"SKIP {game}: no levels dir"); skip++; continue; }
+            string? level = null;
+            foreach (var f in Directory.GetFiles(dir, "*.bin").OrderBy(x => x).Take(120))
+            {
+                try
+                {
+                    var d = LevelLoader.Load(f);
+                    if (!d.Encode().AsSpan().SequenceEqual(d.Original)) continue;
+                    if (FirstEditablePath(d) is not null) { level = f; break; }
+                }
+                catch { }
+            }
+            if (level is null) { skip++; Emit($"{game}: (skip no editable stock path)"); continue; }
+            Emit($"{game}: {Path.GetFileName(level)}");
+
+            var tests = new (string Name, Func<string, (bool?, string)> Run)[]
+            {
+                ("move", TestPathMove), ("add", TestPathAdd), ("remove", TestPathRemove),
+            };
+            foreach (var (name, run) in tests)
+            {
+                var (ok, note) = run(level);
+                if (ok == true) { pass++; Emit($"  OK   {name,-6} {note}"); }
+                else if (ok == false) { fail++; Emit($"  FAIL {name,-6} {note}"); }
+                else { skip++; Emit($"  (skip {name,-6} {note})"); }
+            }
+        }
+
+        Emit("");
+        Emit($"PATH OPS: {pass} pass, {fail} fail, {skip} skip");
+        Emit(fail == 0 && pass > 0 ? "PATH OPS GREEN" : "PATH OPS FAILURES");
+    }
+
+    // The first projected path line whose source the editor can actually drive.
+    private static object? FirstEditablePath(LevelDoc doc)
+    {
+        foreach (var line in doc.Scene.Lines)
+            if (line.Kind == SceneKind.Path && SceneProjector.IsEditablePath(line.Source))
+                return line.Source;
+        return null;
+    }
+
+    private static (bool?, string) TestPathMove(string level)
+    {
+        var doc = LevelLoader.Load(level);
+        var src = FirstEditablePath(doc);
+        if (src is null) return (null, "no editable path");
+        var beforePts = SceneProjector.PathWorldPoints(src);
+        var snap = SnapshotElem(doc.Model);
+        const double dx = 37, dy = 21;
+        if (!SceneProjector.MoveRecord(src, dx, dy)) return (false, "MoveRecord refused");
+        var afterPts = SceneProjector.PathWorldPoints(src);
+        if (afterPts.Count != beforePts.Count) return (false, $"move changed anchor count {beforePts.Count}->{afterPts.Count}");
+        for (int i = 0; i < afterPts.Count; i++)
+            if (Math.Abs(afterPts[i].X - (beforePts[i].X + dx)) > 1e-6 || Math.Abs(afterPts[i].Y - (beforePts[i].Y + dy)) > 1e-6)
+                return (false, $"move anchor {i} not shifted by exactly (+{dx},+{dy})");
+        return PathFinish(doc, snap, $"moved {beforePts.Count} pts (+{dx},+{dy})");
+    }
+
+    private static (bool?, string) TestPathAdd(string level)
+    {
+        var doc = LevelLoader.Load(level);
+        var src = FirstEditablePath(doc);
+        if (src is null) return (null, "no editable path");
+        var pts = SceneProjector.PathWorldPoints(src);
+        if (pts.Count < 2) return (null, "path shorter than two anchors");
+        int c0 = SceneProjector.PathPointCount(src);
+        var snap = SnapshotElem(doc.Model);
+        var mid = new PointD((pts[0].X + pts[1].X) / 2, (pts[0].Y + pts[1].Y) / 2);
+        if (!SceneProjector.TryAddPathPoint(src, mid, double.MaxValue, out int at)) return (false, "TryAddPathPoint refused");
+        if (at != 1) return (false, $"insertedAt={at}, expected 1");
+        int c1 = SceneProjector.PathPointCount(src);
+        if (c1 != c0 + 1) return (false, $"anchor count {c0}->{c1}, expected +1");
+        var np = SceneProjector.PathWorldPoints(src);
+        if (np.Count < 2 || Math.Abs(np[at].X - mid.X) > 1e-6 || Math.Abs(np[at].Y - mid.Y) > 1e-6)
+            return (false, "inserted anchor not at the requested point");
+        return PathFinish(doc, snap, $"add pt @{at} ->{c1}");
+    }
+
+    private static (bool?, string) TestPathRemove(string level)
+    {
+        var doc = LevelLoader.Load(level);
+        var src = FirstEditablePath(doc);
+        if (src is null) return (null, "no editable path");
+        var pts = SceneProjector.PathWorldPoints(src);
+        if (pts.Count <= 2) return (null, "path keeps its last two anchors (nothing to remove)");
+        int c0 = SceneProjector.PathPointCount(src);
+        var snap = SnapshotElem(doc.Model);
+        if (!SceneProjector.TryRemovePathPoint(src, pts[0], double.MaxValue, out int rm)) return (false, "TryRemovePathPoint refused");
+        int c1 = SceneProjector.PathPointCount(src);
+        if (c1 != c0 - 1) return (false, $"anchor count {c0}->{c1}, expected -1");
+        return PathFinish(doc, snap, $"remove pt @{rm} ->{c1}");
+    }
+
+    // Shared tail: re-encode stable, and for a raw-span family prove the edit stayed inside exactly
+    // one record and the section still walks. Returns (false, note) on any violation.
+    private static (bool, string) PathFinish(LevelDoc doc, Dictionary<Section, List<byte[]>>? snap, string note)
+    {
+        byte[] enc = doc.Encode();
+        if (enc.AsSpan().SequenceEqual(doc.Original)) return (false, $"{note} | edit did not reach the saved bytes");
+        if (!doc.Profile.Codec.Encode(doc.Profile.Decode(enc)).AsSpan().SequenceEqual(enc)) return (false, $"{note} | re-encode not stable");
+        if (doc.Model is ElementLevel el)
+        {
+            string? bad = CheckLockstep(el);
+            if (bad is not null) return (false, $"{note} | lockstep: {bad}");
+            if (snap is not null && !ElemPathLocalized(el, snap, out int diffs))
+                return (false, $"{note} | {diffs} records changed (expected exactly 1)");
+            note += " +localised";
+        }
+        return (true, note);
+    }
+
+    // Deep copy of every non-opaque element record so an edit's blast radius can be measured.
+    private static Dictionary<Section, List<byte[]>>? SnapshotElem(object model)
+    {
+        if (model is not ElementLevel el) return null;
+        var d = new Dictionary<Section, List<byte[]>>();
+        foreach (var layer in el.Layers)
+            foreach (var sec in layer)
+            {
+                if (sec.Opaque) continue;
+                var copies = new List<byte[]>(sec.Records.Count);
+                foreach (var r in sec.Records) copies.Add((byte[])r.Clone());
+                d[sec] = copies;
+            }
+        return d;
+    }
+
+    // Exactly one record's bytes may differ from the snapshot (the touched path record — same length
+    // for a move, ±48 bytes for add / remove); every other record must be byte-identical.
+    private static bool ElemPathLocalized(ElementLevel el, Dictionary<Section, List<byte[]>> snap, out int diffs)
+    {
+        diffs = 0;
+        foreach (var layer in el.Layers)
+            foreach (var sec in layer)
+            {
+                if (sec.Opaque || !snap.TryGetValue(sec, out var old)) continue;
+                if (old.Count != sec.Records.Count) { diffs = -1; return false; }   // record count changed
+                for (int i = 0; i < sec.Records.Count; i++)
+                    if (!sec.Records[i].AsSpan().SequenceEqual(old[i])) diffs++;
+            }
+        return diffs == 1;
+    }
+
     // First entity across all layers carrying a non-blank prefab name, as (layer, record).
     private static (int Layer, Tp2Entity? Ent) FirstEntity(Tp2Level tp)
     {
@@ -3116,8 +3738,8 @@ public static class Smoke
 
         foreach (var (game, dir) in Defaults)
         {
-            if (game == "tp2") continue;
             if (!Directory.Exists(dir)) { Emit($"SKIP {game} (no {dir})"); continue; }
+            if (game == "tp2") { Tp2EntityTypeAudit(dir, Emit); continue; }
 
             var sw = System.Diagnostics.Stopwatch.StartNew();
             var names = new SortedDictionary<string, int>(StringComparer.Ordinal);
@@ -3184,6 +3806,39 @@ public static class Smoke
             }
             else Emit("   (game exe not found next to the assets dir: binary cross-check skipped)");
         }
+    }
+
+    /// <summary>TP2 entity-type audit (R4-C). Unlike the raw-span families, TP2 entities are typed
+    /// and the curated <see cref="Tp2Entities"/> table is the authority on what the engine will spawn
+    /// on its own. <see cref="EntityDefs.Harvest"/> for a Tp2Level, however, adds EVERY <c>e.Type</c>
+    /// string a shipped level carries — which includes sub-parts and attached "things" the level uses
+    /// but the game cannot place as a fresh entity. This proves that gap exists (the corpus harvest is
+    /// a strict superset of the curated set), which is exactly what the New-entity picker must police.
+    /// Read-only.</summary>
+    private static void Tp2EntityTypeAudit(string dir, Action<string> Emit)
+    {
+        var corpus = new SortedDictionary<string, int>(StringComparer.Ordinal);
+        int levels = 0, failed = 0;
+        foreach (var lvl in Directory.GetFiles(dir, "*.bin").OrderBy(f => f))
+        {
+            object? model;
+            try { model = LevelLoader.Load(lvl).Model; }
+            catch { failed++; continue; }
+            if (model is not Tp2Level tp) continue;
+            levels++;
+            foreach (var l in tp.Layers)
+                foreach (var e in l.Entities)
+                    if (!string.IsNullOrEmpty(e.Type)) corpus[e.Type!] = corpus.GetValueOrDefault(e.Type!) + 1;
+        }
+        var curated = new HashSet<string>(Tp2Entities.All.Select(d => d.Name), StringComparer.Ordinal);
+        var leaked = corpus.Keys.Where(n => !curated.Contains(n)).ToList();
+        Emit($"tp2: {levels} levels ({failed} undecodable), {corpus.Count} distinct corpus TYPE names, "
+            + $"curated catalogue {curated.Count} names");
+        Emit($"   corpus-not-in-curated (sub-parts / non-placeable things): {leaked.Count}"
+            + (leaked.Count > 0 ? " e.g. " + string.Join(", ", leaked.Take(15)) : ""));
+        var curatedUnused = curated.Where(n => !corpus.ContainsKey(n)).ToList();
+        Emit($"   curated-not-in-corpus (valid but unused by stock levels): {curatedUnused.Count}"
+            + (curatedUnused.Count > 0 ? " e.g. " + string.Join(", ", curatedUnused.Take(10)) : ""));
     }
 
     // S-D9 proof: the entity TYPE catalogue the shell now consults before applying a type must refuse
@@ -3281,11 +3936,24 @@ public static class Smoke
             if (level is null) { Emit($"SKIP {game}: no level with an entity"); continue; }
             Emit($"{game}: {Path.GetFileName(level)}");
 
-            foreach (var mode in new[] { "in-level", "corpus", "unknown", "badname" })
+            foreach (var mode in new[] { "in-level", "corpus", "singleword", "unknown", "badname" })
             {
                 var (ok, skip, note) = TestSpawn(dir, level, mode);
                 if (skip) { skipped++; Emit($"  SKIP {game}/{mode}: {note}"); continue; }
                 Check(ok, $"{game}/{mode}: {note}");
+            }
+            if (game == "tp2")
+            {
+                // R4-C: TP2 is policed from the curated Tp2Entities authority, so even a single-level
+                // folder yields the full definition set (>= 8) instead of standing down. Prove it.
+                var decode1 = LevelLoader.Load(level).Profile.Decode;
+                var thin = EntityDefs.Harvest(dir, decode1, maxFiles: 1);
+                bool authoritative = thin.Count >= 8 && thin.TypedRecords
+                    && thin.Knows("lava") && thin.Knows("horse_egypt1") && thin.Knows("bunsen");
+                bool refusesThings = !thin.Knows("bunsun") && !thin.Knows("Arabian Horse")
+                    && !thin.Knows("zz_probe_entity_cell") && !thin.Knows("bonuslevelsbutton");
+                Check(authoritative, $"tp2/thin-folder: curated authority survives 1 level (count={thin.Count}, typed={thin.TypedRecords})");
+                Check(refusesThings, "tp2/thin-folder: non-placeable things refused (bunsun, Arabian Horse, probe, bonus button)");
             }
         }
 
@@ -3313,12 +3981,18 @@ public static class Smoke
             // record to copy, so require one the harvest can actually supply.
             "corpus" => cat.Names.FirstOrDefault(n => !used.Contains(n, StringComparer.Ordinal)
                         && (doc.Model is Tp2Level || cat.ProtoFor(n)?.Raw is { Length: > 16 })) ?? "",
+            // R4-C: a real TP2 entity with NO underscore (lava, sun, pyramid) - the curated authority
+            // must let it spawn even though the raw-span underscore rule used to block it. Not offered
+            // for the raw-span families (their names always carry an underscore), so they skip.
+            "singleword" => doc.Model is Tp2Level
+                ? cat.Names.FirstOrDefault(n => n.IndexOf('_') < 0 && !used.Contains(n, StringComparer.Ordinal)) ?? ""
+                : "",
             "unknown" => "zz_probe_entity_cell",
             "badname" => "nounderscorehere",
             _ => "",
         };
         if (type.Length == 0) return (true, true, "no candidate name");
-        bool expectOk = mode is "in-level" or "corpus";
+        bool expectOk = mode is "in-level" or "corpus" or "singleword";
 
         // Spawn next to the level's last entity, in its own layer, on integer coordinates: the
         // raw-span families store positions as int32 deltas, so a fractional target would only

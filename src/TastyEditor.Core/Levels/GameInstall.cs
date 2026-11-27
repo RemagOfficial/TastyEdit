@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 
 namespace TastyEditor.Core.Levels;
 
@@ -18,6 +18,8 @@ public static class GameInstall
         ("tb", @"Tasty Blue", @"assets\editabledirect\levels"),
         ("f4", @"Tasty Planet Forever", @"assets\editabledirect\levels"),
         ("f5", @"Tasty Planet Final Bite", @"assets\editabledirect\levels"),
+        // The original Tasty Planet keeps its plain-XML levels directly under assets.
+        ("tp1", @"Tasty Planet", @"assets\levels"),
     };
 
     /// <summary>
@@ -47,6 +49,34 @@ public static class GameInstall
     public static string MissingHint(string gameKey) =>
         $"no {gameKey} level folder found - install the game, or set " +
         $"TPE_LEVELS_{gameKey.ToUpperInvariant()} to its levels directory";
+
+    /// <summary>The games the editor knows about, as (key, display name) â€” the display name is the
+    /// folder Steam installs them into. Drives the first-run setup listing.</summary>
+    public static (string Key, string Name)[] KnownGames() =>
+        System.Array.ConvertAll(Known, k => (k.Key, k.Folder));
+
+    /// <summary>
+    /// The install folder for a game key (the game's own directory, the parent of its level path), or
+    /// null when no install is found. Detection is by folder presence only â€” it never launches or
+    /// touches a game. Falls back to the levels path's parent when <c>TPE_LEVELS_&lt;KEY&gt;</c> names a
+    /// non-Steam copy, so the setup dialog can still point at it.
+    /// </summary>
+    public static string? InstallDir(string gameKey)
+    {
+        var known = Array.Find(Known, k => string.Equals(k.Key, gameKey, StringComparison.OrdinalIgnoreCase));
+        if (known.Key is null) return null;
+
+        var env = Environment.GetEnvironmentVariable("TPE_LEVELS_" + gameKey.ToUpperInvariant());
+        if (!string.IsNullOrWhiteSpace(env) && Directory.Exists(env))
+            return Path.GetDirectoryName(env.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+
+        foreach (var root in LibraryRoots())
+        {
+            var dir = Path.Combine(root, "steamapps", "common", known.Folder);
+            if (Directory.Exists(dir)) return dir;
+        }
+        return null;
+    }
 
     /// <summary>Steam library roots: the ones the Steam client records, plus its default install.</summary>
     private static IEnumerable<string> LibraryRoots()

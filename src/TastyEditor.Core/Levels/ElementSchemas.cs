@@ -40,7 +40,7 @@ public static class FinalBiteSchema
 
     private static void ShapeBody(ByteCursor c, string name)
     {
-        if (name == "Circle") { c.F64(); c.F64(); c.F64(); }
+        if (ElementShapes.IsCircleName(name)) { c.F64(); c.F64(); c.F64(); }
         else { int m = c.I32(); if (m < 0 || m > Cap) throw new StopException("bad verts"); for (int i = 0; i < m; i++) { c.F64(); c.F64(); } }
     }
 
@@ -131,7 +131,9 @@ public static class ForeverSchema
         for (int i = 0; i < count; i++)
         {
             string name = c.String();
-            if (name == "Circle") { c.F64(); c.F64(); c.F64(); }
+            // Type dispatch, not spelling dispatch — see ElementShapes.IsCircleName for why the
+            // case-sensitive version cost Forever's mars1_9 / mars1_10 their entity blocks.
+            if (ElementShapes.IsCircleName(name)) { c.F64(); c.F64(); c.F64(); }
             else { int vc = c.I32(); for (int k = 0; k < vc; k++) { c.F64(); c.F64(); } }
         }
         if (c.Bool4() != 0) c.String();      // f4 nested-extension reads only a string

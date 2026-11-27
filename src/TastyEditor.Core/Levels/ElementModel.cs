@@ -1,5 +1,23 @@
 namespace TastyEditor.Core.Levels;
 
+/// <summary>How much authority the framing of a raw-span level (Forever / Final Bite) carries.
+/// The entity block's end is a search, not a field the file states, and several different answers
+/// all re-encode byte-identically — so I1 alone cannot say which one was found. These are the
+/// passes <see cref="ElementSpanCodec.Decode"/> tries, best first, and the one that won is kept
+/// on the model so a gate can tell a framed level from one that merely closed.</summary>
+public enum FramingAuthority
+{
+    /// <summary>Every entity block splits into exactly its declared record count, and each block
+    /// is bounded by a real record head at both ends. The strongest answer the oracle can give.</summary>
+    RecordExactBothEnds,
+    /// <summary>Counts are exact but the head-at-both-ends test did not hold everywhere: framed,
+    /// with one piece of corroboration missing.</summary>
+    RecordExactCount,
+    /// <summary>Nothing but "some tiling reaches EOF" vouches for this framing. Correct on the
+    /// shipped corpus, but it is the pass that can put a section header inside a record.</summary>
+    Lenient,
+}
+
 /// <summary>One decoded section: the authoritative record count, the byte offset
 /// of the count field and of the section end, and either a list of raw record
 /// spans (framed sections) or one opaque blob (the entity block). This is the
@@ -39,4 +57,10 @@ public sealed class ElementLevel
     public List<List<Section>> Layers = new();
     public byte[] Trailing = Array.Empty<byte>();
     public int SectionsPerLayer;
+
+    /// <summary>Which framing pass produced <see cref="Layers"/>. Null means the codec that built
+    /// this level never claimed one — which is a bug in that codec, not a property of the file, so
+    /// it is left unset rather than defaulted to the strongest answer (a default would let a new
+    /// reader pass the authority gate by saying nothing).</summary>
+    public FramingAuthority? FramingAuthority;
 }

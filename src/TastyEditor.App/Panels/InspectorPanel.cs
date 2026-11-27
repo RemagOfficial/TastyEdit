@@ -22,8 +22,8 @@ public sealed class InspectorPanel : StackPanel
     private readonly TextBox _x = new();
     private readonly TextBox _y = new();
     private readonly Button _apply = new() { Content = "Apply position", Margin = new Thickness(0, 6, 0, 0) };
-    private readonly Button _next = new() { Content = "Select next entity", Margin = new Thickness(0, 10, 0, 0) };
-    private readonly TextBlock _hint = new() { TextWrapping = TextWrapping.Wrap, Foreground = System.Windows.Media.Brushes.Gray, Margin = new Thickness(0, 6, 0, 0) };
+    private readonly Button _next = new() { Content = "Select next object", Margin = new Thickness(0, 10, 0, 0), ToolTip = "Jump to the next object you can move, centring the view on it." };
+    private readonly TextBlock _hint = new() { TextWrapping = TextWrapping.Wrap, Foreground = Theme.TextMutedBrush(), Margin = new Thickness(0, 6, 0, 0) };
 
     // Decoration rotation (D6). A rotatable marker (Tasty Blue / ElementEngine deco) gets a
     // degrees field + its own apply; every other selection hides the whole rotation row.
@@ -96,6 +96,9 @@ public sealed class InspectorPanel : StackPanel
         Margin = new Thickness(0, 2, 0, 0),
         MaxDropDownHeight = 320,
         IsTextSearchEnabled = false,
+        // The dropdown list stays on the platform's always-light popup, so its rows are pinned to dark
+        // ink via a local ItemContainerStyle (certain to apply, unlike the implicit ComboBox style).
+        ItemContainerStyle = Theme.ComboItemInkStyle(),
     };
     private readonly Button _spriteApply = new() { Content = "Apply sprite", Margin = new Thickness(0, 6, 0, 0) };
     private SceneCross? _spriteBound;
@@ -253,6 +256,58 @@ public sealed class InspectorPanel : StackPanel
     /// still selected.</summary>
     public void InvalidateTail() => _boundTail = null;
 
+    /// <summary>R3: reads whether a named inspector card starts collapsed, and reports a change so the
+    /// shell persists it. With nothing wired, every card starts expanded.</summary>
+    public Func<string, bool>? IsCollapsed;
+    public Action<string, bool>? OnCollapse;
+
+    // ---- Tasty Planet 1 object card --------------------------------------
+    //
+    // A tp1 level is a tree of plain-text XML elements whose only meaning is the attributes each
+    // carries. Rather than hand-enumerate every object kind's fields (the shipped levels use a long
+    // tail of attribute names, and the game reads them by the exact spelling the file uses), the card
+    // reflects whatever attributes the selected element actually has and lets each be edited in place.
+    // Scalar writes go through the span-localised edit so only that value's bytes move; the whole card
+    // re-reads the element after a commit, so it can never drift from what the file really holds. For
+    // a controller / emitter the element's own list children (what it affects, its timed emits) are
+    // shown too, each editable, with add / remove. A handful of attributes are the game's own
+    // vocabulary — an emitter/controller type, or which object an emitter makes — and those are offered
+    // as a dropdown the shell validates so an edit can only pick a name the game knows.
+    private readonly Border _tp1Box = new()
+    {
+        Margin = new Thickness(0, 8, 0, 0),
+        BorderThickness = new Thickness(1),
+        BorderBrush = new SolidColorBrush(Color.FromRgb(96, 165, 250)),
+        Background = new SolidColorBrush(Color.FromRgb(32, 36, 44)),
+        Padding = new Thickness(6),
+        Visibility = Visibility.Collapsed,
+    };
+    private readonly StackPanel _tp1Rows = new();
+    private string _boundTp1Path = "";
+    private bool _tp1Suppress;
+    private Func<string, string[]?>? _tp1Names;   // the shell's list of object types / tile pictures
+
+    /// <summary>Commit an absolute attribute edit on a tp1 element: <c>(handle, key, new text)</c>.
+    /// The shell re-derives the number-vs-text form, writes only that value's bytes, re-projects and
+    /// commits one undo step.</summary>
+    public Action<TastyEditor.Core.Levels.Tp1Handle, string, string>? ApplyTp1Attr;
+
+    /// <summary>Add one child of a tag to a tp1 element (a new affect / timed emit), cloned from the
+    /// element's own style. The shell re-projects so the fresh element is editable immediately.</summary>
+    public Action<TastyEditor.Core.Levels.Tp1Handle, string>? ApplyTp1Add;
+
+    /// <summary>Remove one child element (addressed by its own handle) from a tp1 element.</summary>
+    public Action<TastyEditor.Core.Levels.Tp1Handle>? ApplyTp1Remove;
+
+    /// <summary>Supply the shell's known object-type names (emitter <c>entitydef</c>) and tile pictures
+    /// so the card can offer them as a validated dropdown. Null hides the dropdown (plain free text).</summary>
+    public void SetTp1Names(Func<string, string[]?>? names) => _tp1Names = names;
+
+    /// <summary>Force the tp1 card to rebuild on the next Show. A scalar commit refreshes values
+    /// in place (the path is unchanged), but an add / remove changes the element's own children
+    /// while keeping its path, so the shell calls this to drop the row layout and re-read the tree.</summary>
+    public void InvalidateTp1() => _boundTp1Path = "";
+
     public InspectorPanel()
     {
         Margin = new Thickness(8, 6, 8, 6);
@@ -290,6 +345,12 @@ public sealed class InspectorPanel : StackPanel
         Children.Add(_waterBox);
 
         BuildSpritePanel();
+        // The entity picker is a NON-editable combo (a short curated list, chosen from only), and the
+        // closed box draws its selected item through a ContentPresenter that ignores the control's own
+        // Foreground - so the name sat there in the platform's default grey on light chrome. Setting
+        // Foreground alone was never going to reach it; StyleCombo also installs the ItemTemplate whose
+        // TextBlock carries a local dark ink, which the collapsed box mirrors into SelectionBoxItemTemplate.
+        Theme.StyleCombo(_spriteCombo);
         Children.Add(_spriteBox);
 
         BuildTp2Panel();
@@ -297,6 +358,17 @@ public sealed class InspectorPanel : StackPanel
 
         BuildNamedPanel();
         Children.Add(_namedBox);
+
+        BuildTp1Panel();
+        Children.Add(_tp1Box);
+
+        // R3: turn the four hardcoded group boxes into rounded theme cards with a click-to-collapse
+        // header whose open/closed state the shell remembers.
+        MakeCard(_waterBox, "water");
+        MakeCard(_spriteBox, "sprite");
+        MakeCard(_tp2Box, "tp2");
+        MakeCard(_namedBox, "behaviour");
+        MakeCard(_tp1Box, "tp1");
 
         _apply.Click += (_, _) => Apply();
         _applyRot.Click += (_, _) => ApplyRotationNow();
@@ -330,6 +402,58 @@ public sealed class InspectorPanel : StackPanel
         Show(null);
     }
 
+    /// <summary>R3: restyle one group box as a rounded theme card and give its header a collapse
+    /// toggle. The head (the box's first child, a coloured title) becomes a clickable row with a
+    /// chevron; everything below it moves into a host the header hides. The starting state comes from
+    /// <see cref="IsCollapsed"/> and a toggle is reported through <see cref="OnCollapse"/>. Manage*
+    /// methods still show/hide the whole card per selection, which is unaffected by this wrapping.</summary>
+    private void MakeCard(Border box, string id)
+    {
+        box.CornerRadius = new CornerRadius(Theme.Corner);
+        box.BorderThickness = new Thickness(1);
+        Theme.Ref(box, Border.BackgroundProperty, Theme.KSurface);
+        Theme.Ref(box, Border.BorderBrushProperty, Theme.KBorder);
+
+        if (box.Child is not StackPanel outer || outer.Children.Count == 0) return;
+        UIElement head = outer.Children[0];
+        outer.Children.RemoveAt(0);
+
+        var contentHost = new StackPanel();
+        while (outer.Children.Count > 0)
+        {
+            var el = outer.Children[0];
+            outer.Children.RemoveAt(0);
+            contentHost.Children.Add(el);
+        }
+
+        var chevron = new TextBlock { Width = 14, VerticalAlignment = VerticalAlignment.Center, FontSize = 10 };
+        Theme.Ref(chevron, TextBlock.ForegroundProperty, Theme.KTextMuted);
+        var headerRow = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Cursor = Cursors.Hand,
+            Margin = new Thickness(0, 0, 0, 2),
+        };
+        headerRow.Children.Add(chevron);
+        headerRow.Children.Add(head);
+        var headerHost = new Border { Child = headerRow, Background = Brushes.Transparent };
+
+        bool collapsed = IsCollapsed?.Invoke(id) ?? false;
+        contentHost.Visibility = collapsed ? Visibility.Collapsed : Visibility.Visible;
+        chevron.Text = collapsed ? "\u25B8" : "\u25BE";
+
+        headerHost.MouseLeftButtonUp += (_, _) =>
+        {
+            bool wasOpen = contentHost.Visibility == Visibility.Visible;
+            contentHost.Visibility = wasOpen ? Visibility.Collapsed : Visibility.Visible;
+            chevron.Text = wasOpen ? "\u25B8" : "\u25BE";
+            OnCollapse?.Invoke(id, wasOpen);
+        };
+
+        outer.Children.Add(headerHost);
+        outer.Children.Add(contentHost);
+    }
+
     private static void AddRow(Grid g, int row, string label, TextBox box)
     {
         g.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -350,24 +474,26 @@ public sealed class InspectorPanel : StackPanel
             _info.Text = "Nothing selected.";
             SetEditable(false);
             _x.Text = _y.Text = "";
-            _hint.Text = "Click an object in the viewport, or use Select next entity.";
+            _hint.Text = "Click an object in the viewport, or use Select next object.";
             ManageWater(null);
             ManageSprite(null);
             ManageRotation(null);
             ManageFlip(null);
             ManageTp2(null);
             ManageTail(null);
+            ManageTp1(null);
             return;
         }
 
         string label = string.IsNullOrEmpty(sel.Label) ? "" : $" “{sel.Label}”";
-        _info.Text = $"{sel.Kind}{label}   ·   Level {sel.Layer + 1}   ·   #{sel.Id}";
+        _info.Text = $"{UiText.Kind(sel.Kind)}{label}   ·   Level {sel.Layer + 1}   ·   #{sel.Id}";
         ManageWater(sel);
         ManageSprite(sel);
         ManageRotation(sel);
         ManageFlip(sel);
         ManageTp2(sel);
         ManageTail(sel);
+        ManageTp1(sel);
 
         if (sel is SceneCross cr && SceneProjector.GetPos(cr.Source) is PointD p)
         {
@@ -376,13 +502,12 @@ public sealed class InspectorPanel : StackPanel
             _y.Text = Fmt(p.Y);
             SetEditable(true);
             _hint.Text = SceneProjector.IsRotatable(cr.Source)
-                ? "Drag the marker to move it, or edit X / Y below. Set Rot\u00b0 (or press [ and ], Shift for 15\u00b0) to turn it."
+                ? "Drag the object to move it, or type its X / Y here. To turn it, type an angle in Rot\u00b0 and press Apply rotation, or press [ and ] (hold Shift for 15\u00b0 steps). "
                     + (SceneProjector.IsFlippable(cr.Source)
-                        ? " Flip X / Flip Y mirror it the way the game places a flipped decoration."
+                        ? "Flip X / Flip Y mirror the picture, the way the game places a flipped decoration. "
                         : "")
-                    + " Every edit splices the record in place and undoes with Ctrl+Z."
-                : "Edit X / Y and Apply, or drag the marker in the viewport. " +
-                  "This writes through the codec's lossless position re-derivation.";
+                    + UndoHint
+                : "Drag the object in the viewport, or type its X / Y here and press Apply position.";
         }
         else
         {
@@ -391,14 +516,18 @@ public sealed class InspectorPanel : StackPanel
             if (sel is ScenePoly sp && SceneProjector.IsEditablePoly(sp.Source, sp.ShapeIndex))
             {
                 _hint.Text = sp.Kind == SceneKind.Water
-                    ? "Water rectangle. Drag a corner handle to resize (opposite corner stays fixed), or drag inside to move the whole box. Edits write back through the codec's field re-serialisation."
-                    : $"Polygon · {SceneProjector.PolyVertexCount(sp.Source, sp.ShapeIndex)} vertices. Drag a vertex handle to reshape, double-click an edge to add a vertex at the cursor, or drag inside the outline to move the whole shape. Edits write back through the codec's field re-serialisation.";
+                    ? "This is the water box. Drag a corner to resize it (the opposite corner stays put), or drag inside it to move the whole box."
+                    : $"This shape has {SceneProjector.PolyVertexCount(sp.Source, sp.ShapeIndex)} corners. Drag a corner to reshape it, double-click an edge to add a corner there, or drag inside the outline to move the whole shape.";
+            }
+            else if (sel is SceneLine sl && SceneProjector.IsEditablePath(sl.Source))
+            {
+                _hint.Text = $"This path has {SceneProjector.PathPointCount(sl.Source)} points. Drag a point to bend it, double-click the line to add a point there, right-click a point to remove it, or drag along the line to move the whole path. " + UndoHint;
             }
             else
             {
                 _hint.Text = sel is SceneCross
-                    ? "This marker's position is not mapped to an editable field yet, so it can't be moved."
-                    : "This shape is not field-editable yet.";
+                    ? "This object's position is stored in a way the editor cannot safely change yet, so it can't be moved."
+                    : "This shape can't be edited yet.";
             }
         }
     }
@@ -412,6 +541,10 @@ public sealed class InspectorPanel : StackPanel
         else
             _hint.Text = "X and Y must both be numbers.";
     }
+
+    /// <summary>R1: the shared hint line for the geometry rows, in place of the old sentences that
+    /// narrated how the write works.</summary>
+    private const string UndoHint = "Every change can be undone with Ctrl+Z.";
 
     // ------------------------------------------------ rotation row (D6) ---
 
@@ -477,12 +610,12 @@ public sealed class InspectorPanel : StackPanel
 
     private void BuildWaterPanel()
     {
-        var head = new TextBlock { Text = "Water volume", FontWeight = FontWeights.SemiBold, Foreground = System.Windows.Media.Brushes.DeepSkyBlue, Margin = new Thickness(0, 0, 0, 2) };
+        var head = new TextBlock { Text = "Water", FontWeight = FontWeights.SemiBold, Foreground = System.Windows.Media.Brushes.DeepSkyBlue, Margin = new Thickness(0, 0, 0, 2) };
         var note = new TextBlock
         {
-            Text = "Geometry (centre / size) is exact; the rest keep their engine offsets (the game never labels them). Edit only if you know what a field does.",
+            Text = "Position and size are what the game draws the water box from. The fields below it are settings the game's own files never name \u2014 hover one to see what is known about it. " + UndoHint,
             TextWrapping = TextWrapping.Wrap,
-            Foreground = System.Windows.Media.Brushes.Gray,
+            Foreground = Theme.TextMutedBrush(),
             FontSize = 10,
             Margin = new Thickness(0, 0, 0, 6),
         };
@@ -539,6 +672,9 @@ public sealed class InspectorPanel : StackPanel
                 else { tb.LostFocus += (_, _) => OnWaterEdit(spec); tb.KeyDown += (_, e) => { if (e.Key == Key.Enter) OnWaterEdit(spec); }; }
                 ctl = tb;
             }
+            // R1: the label alone cannot explain a field the game never names, so the meaning (or the
+            // honest "not known") hangs on both the label and the input.
+            if (spec.Hint.Length > 0) { lb.ToolTip = spec.Hint; ctl.ToolTip = spec.Hint; }
             Grid.SetRow(lb, i); Grid.SetColumn(lb, 0);
             Grid.SetRow(ctl, i); Grid.SetColumn(ctl, 1);
             _waterGrid.Children.Add(lb);
@@ -592,12 +728,13 @@ public sealed class InspectorPanel : StackPanel
 
     private void BuildSpritePanel()
     {
-        var head = new TextBlock { Text = "Sprite reassignment", FontWeight = FontWeights.SemiBold, Foreground = System.Windows.Media.Brushes.MediumPurple, Margin = new Thickness(0, 0, 0, 2) };
+        var head = new TextBlock { Text = "Sprite", FontWeight = FontWeights.SemiBold, Foreground = System.Windows.Media.Brushes.MediumPurple, Margin = new Thickness(0, 0, 0, 2) };
         var note = new TextBlock
         {
-            Text = "Repoint this at another sprite. Back for Seconds entities are limited to real entity types (a sprite with no definition crashes the game); Tasty Blue / Forever / Final Bite entities and all decorations accept any atlas cell name (a name is refused only if the record could not be re-read safely).",
+            Text = "Show this object as a different picture. An entity has to be a type the game actually has \u2014 Back for Seconds only offers those, and on the other games a name they have never used is refused, because the game would load the level and leave the entity out. "
+                + "Decorations are plain pictures, so any sprite the game ships can be used.",
             TextWrapping = TextWrapping.Wrap,
-            Foreground = System.Windows.Media.Brushes.Gray,
+            Foreground = Theme.TextMutedBrush(),
             FontSize = 10,
             Margin = new Thickness(0, 0, 0, 4),
         };
@@ -737,12 +874,12 @@ public sealed class InspectorPanel : StackPanel
 
     private void BuildTp2Panel()
     {
-        var head = new TextBlock { Text = "Entity / decoration fields", FontWeight = FontWeights.SemiBold, Foreground = Brushes.Orange, Margin = new Thickness(0, 0, 0, 2) };
+        var head = new TextBlock { Text = "Properties", FontWeight = FontWeights.SemiBold, Foreground = Brushes.Orange, Margin = new Thickness(0, 0, 0, 2) };
         var note = new TextBlock
         {
-            Text = "Records expose the same editable fields the classic editor did. Position and rotation are above; each value here writes the record and undoes with Ctrl+Z. On Tasty Blue, Forever and Final Bite the spawn/path/area/emitter behaviour after mass and priority is decoded live from each game's own engine code and edited by name in the \"Behaviour fields\" group below \u2014 no raw byte tables.",
+            Text = "The same settings the classic editor showed. Position and rotation are above; everything here undoes with Ctrl+Z. On Tasty Blue, Forever and Final Bite the behaviour settings (spawning, path following, wandering, colour fades) live in the \u201cBehaviour\u201d group below \u2014 they are read out of each game's own loading code and shown by the game's own names.",
             TextWrapping = TextWrapping.Wrap,
-            Foreground = Brushes.Gray,
+            Foreground = Theme.TextMutedBrush(),
             FontSize = 10,
             Margin = new Thickness(0, 0, 0, 6),
         };
@@ -787,7 +924,8 @@ public sealed class InspectorPanel : StackPanel
         int row = 0;
         if (_tp2IsEntity)
         {
-            NumRow("mass", "mass (size)", ref row, isInt: false);
+            NumRow("mass", "mass (size)", ref row, isInt: false,
+                "How big this object is. The goo can eat things lighter than it, and this also sets how large the object is drawn.");
             NumRow("prio", "priority", ref row, isInt: true);
             EatRow(ref row);
             // The behaviour blocks (persist / spawner / follow-path) are rewritable only on TP2's
@@ -796,17 +934,19 @@ public sealed class InspectorPanel : StackPanel
             if (behav)
             {
                 BoolRow("persist", "persists", ref row);
-                BoolRow("emit_on", "emits (spawner)", ref row);
-                NumRow("emit_count", "\u21b3 count", ref row, isInt: true);
-                NumRow("emit_min", "\u21b3 min s", ref row, isInt: false);
-                NumRow("emit_max", "\u21b3 max s", ref row, isInt: false);
+                BoolRow("emit_on", "emits (spawner)", ref row,
+                    "Makes this object produce other objects over and over. The two settings under it say how many, and how long it waits between bursts.");
+                NumRow("emit_count", "\u21b3 count", ref row, isInt: true, "How many objects it produces in each burst.");
+                NumRow("emit_min", "\u21b3 min s", ref row, isInt: false, "Shortest wait between bursts, in seconds.");
+                NumRow("emit_max", "\u21b3 max s", ref row, isInt: false, "Longest wait between bursts, in seconds.");
             }
             ColorRow(ref row);
             if (behav) PathRow(ref row);
         }
         else
         {
-            NumRow("dsize", "size \u00d7", ref row, isInt: false);
+            NumRow("dsize", "size \u00d7", ref row, isInt: false,
+                "Scales the picture: 1 shows it at the sprite's own size, 2 makes it twice as big.");
             if (SceneProjector.SupportsDecoPriority(_boundTp2))
                 NumRow("dprio", "priority", ref row, isInt: true);
             ColorRow(ref row);
@@ -814,18 +954,21 @@ public sealed class InspectorPanel : StackPanel
         _tp2Suppress = false;
     }
 
-    private void Label(string text, int row)
+    private void Label(string text, int row, string? hint = null)
     {
         _tp2Grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         var lb = new TextBlock { Text = text, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 1, 6, 1), FontSize = 11 };
+        if (!string.IsNullOrEmpty(hint)) lb.ToolTip = hint;
         Grid.SetRow(lb, row); Grid.SetColumn(lb, 0);
         _tp2Grid.Children.Add(lb);
     }
 
-    private void NumRow(string key, string label, ref int row, bool isInt)
+    private void NumRow(string key, string label, ref int row, bool isInt, string? hint = null)
     {
-        Label(label, row);
+        hint ??= UiText.FieldHint(label);
+        Label(label, row, hint);
         var tb = new TextBox { Margin = new Thickness(0, 1, 0, 1), FontSize = 11 };
+        if (!string.IsNullOrEmpty(hint)) tb.ToolTip = hint;
         tb.LostFocus += (_, _) => CommitNum(key, tb, isInt);
         tb.KeyDown += (_, e) => { if (e.Key == Key.Enter) CommitNum(key, tb, isInt); };
         Grid.SetRow(tb, row); Grid.SetColumn(tb, 1);
@@ -834,10 +977,12 @@ public sealed class InspectorPanel : StackPanel
         row++;
     }
 
-    private void BoolRow(string key, string label, ref int row)
+    private void BoolRow(string key, string label, ref int row, string? hint = null)
     {
-        Label(label, row);
+        hint ??= UiText.FieldHint(label);
+        Label(label, row, hint);
         var cb = new CheckBox { Margin = new Thickness(0, 3, 0, 3) };
+        if (!string.IsNullOrEmpty(hint)) cb.ToolTip = hint;
         cb.Checked += (_, _) => OnToggle(key, true);
         cb.Unchecked += (_, _) => OnToggle(key, false);
         Grid.SetRow(cb, row); Grid.SetColumn(cb, 1);
@@ -849,8 +994,9 @@ public sealed class InspectorPanel : StackPanel
 
     private void EatRow(ref int row)
     {
-        Label("eat size (cm)", row);
-        _eatLabel = new TextBlock { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 1, 0, 1), FontSize = 11, Foreground = Brushes.LightGray };
+        Label("eat size (cm)", row,
+            "How big this object ends up in metres, worked out from its mass and the campaign's scale. It follows from mass \u2014 change the mass, not this.");
+        _eatLabel = new TextBlock { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 1, 0, 1), FontSize = 11, Foreground = Theme.TextMutedBrush() };
         Grid.SetRow(_eatLabel, row); Grid.SetColumn(_eatLabel, 1);
         _tp2Grid.Children.Add(_eatLabel);
         row++;
@@ -858,9 +1004,10 @@ public sealed class InspectorPanel : StackPanel
 
     private void ColorRow(ref int row)
     {
-        Label("color (r g b a)", row);
+        Label("color (r g b a)", row,
+            "The colour the picture is tinted with, from 0 to 255 per channel. The last one is how see-through it is: 255 solid, 0 invisible.");
         var pan = new StackPanel { Orientation = Orientation.Horizontal };
-        _swatch = new Rectangle { Width = 20, Height = 20, Margin = new Thickness(0, 0, 6, 0), Stroke = Brushes.Gray, Fill = Brushes.White };
+        _swatch = new Rectangle { Width = 20, Height = 20, Margin = new Thickness(0, 0, 6, 0), Stroke = Theme.BorderBrush(), Fill = Brushes.White };
         // Allocate the four channel boxes fresh each rebuild: a WPF element can only have one
         // visual parent, so re-adding a previous build's TextBox to the new panel throws.
         _cr = NewChannel("cr"); _cg = NewChannel("cg"); _cb = NewChannel("cb"); _ca = NewChannel("ca");
@@ -890,6 +1037,7 @@ public sealed class InspectorPanel : StackPanel
     {
         Label("follow path", row);
         _pathCombo = new ComboBox { Margin = new Thickness(0, 1, 0, 1), FontSize = 11 };
+        Theme.StyleCombo(_pathCombo);
         _pathCombo.SelectionChanged += (_, _) => OnPathChanged();
         Grid.SetRow(_pathCombo, row); Grid.SetColumn(_pathCombo, 1);
         _tp2Grid.Children.Add(_pathCombo);
@@ -949,7 +1097,7 @@ public sealed class InspectorPanel : StackPanel
         double mass = SceneProjector.FieldGet(src, "mass") ?? 0;
         double cm = 2 * Math.Sqrt(Math.Max(mass, 1.0) / Math.PI) * MeterPerPixel * 100;
         _eatLabel.Text = cm.ToString("0.00", CultureInfo.InvariantCulture);
-        _eatLabel.ToolTip = $"Ø = 2·√(mass/π)·meterperpix·100 (mpp {MeterPerPixel:0.######})";
+        _eatLabel.ToolTip = $"Worked out from mass and the campaign's scale (Ø = 2·√(mass/π) · scale · 100, scale {MeterPerPixel:0.######}) — shown so you can judge how big the object will feel in the game.";
     }
 
     private void FillColor(object? src)
@@ -1067,7 +1215,7 @@ public sealed class InspectorPanel : StackPanel
             // No raw fallback exists: unnamed bytes are reported, never rendered as a hex lane, so a
             // gap in the grammar is visible as a fact to chase down instead of data to hand-edit.
             _tailNote.Text = unconsumed > 0
-                ? $"{unconsumed} tail byte{(unconsumed == 1 ? "" : "s")} not yet named in {SceneProjector.TailGameName(src)} \u2014 still being identified from the game code."
+                ? $"{unconsumed} value{(unconsumed == 1 ? "" : "s")} at the end of this object aren't understood yet in {SceneProjector.TailGameName(src)} \u2014 the editor leaves them exactly as they are while they are still being worked out from the game's code."
                 : "";
             _tailNote.Visibility = unconsumed > 0 ? Visibility.Visible : Visibility.Collapsed;
         }
@@ -1077,12 +1225,12 @@ public sealed class InspectorPanel : StackPanel
 
     private void BuildNamedPanel()
     {
-        var head = new TextBlock { Text = "Behaviour fields", FontWeight = FontWeights.SemiBold, Foreground = Brushes.MediumSeaGreen, Margin = new Thickness(0, 0, 0, 2) };
+        var head = new TextBlock { Text = "Behaviour", FontWeight = FontWeights.SemiBold, Foreground = Brushes.MediumSeaGreen, Margin = new Thickness(0, 0, 0, 2) };
         var note = new TextBlock
         {
-            Text = "Every behaviour block after mass / priority, decoded by name from the game's own loading code (Movement, Path Follow, Point List, Random Area, Emitter, Entity Link, Cell Colours) \u2014 like TP2. Numbers edit in place. A ticked name is an enabled behaviour block: unticking it takes the block out of the record, ticking it adds the block back with the engine's own defaults, and an embedded name or the colour count resizes the record the same guarded way. A change the game's loader would not read back is refused instead of written.",
+            Text = "What this object does in the game beyond sitting there: moving, following a path, walking a list of points, wandering an area, spawning things, linking to another object, fading through colours. Each group has a switch \u2014 turning one off takes that behaviour away from the object, turning it on adds it back with the game's own starting values. Some fields carry the game's own internal names because the shipped files use them \u2014 hover any name to see what it does. A change the game would not read back correctly is refused instead of written, so an edit here can never leave a broken level.",
             TextWrapping = TextWrapping.Wrap,
-            Foreground = Brushes.Gray,
+            Foreground = Theme.TextMutedBrush(),
             FontSize = 10,
             Margin = new Thickness(0, 0, 0, 6),
         };
@@ -1123,6 +1271,7 @@ public sealed class InspectorPanel : StackPanel
                     FontSize = 11,
                     Foreground = Brushes.MediumSeaGreen,
                     Margin = new Thickness(0, 4, 0, 1),
+                    ToolTip = UiText.FieldHint(f.Group),
                 });
             }
 
@@ -1130,7 +1279,10 @@ public sealed class InspectorPanel : StackPanel
             g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(150) });
 
-            var lbl = new TextBlock { Text = f.Name, VerticalAlignment = VerticalAlignment.Center, FontSize = 11, Foreground = Brushes.LightGray };
+            // R1: several of these labels are the attribute names the game's own loading code reads,
+            // which are not self-explanatory; the hint hangs the meaning on both halves of the row.
+            string? fHint = UiText.FieldHint(f.Name);
+            var lbl = new TextBlock { Text = f.Name, VerticalAlignment = VerticalAlignment.Center, FontSize = 11, Foreground = Theme.TextMutedBrush(), ToolTip = fHint };
             Grid.SetColumn(lbl, 0);
             g.Children.Add(lbl);
 
@@ -1144,8 +1296,9 @@ public sealed class InspectorPanel : StackPanel
                     HorizontalAlignment = HorizontalAlignment.Right,
                     Margin = new Thickness(4, 0, 0, 0),
                     Content = "enabled",
-                    Foreground = Brushes.LightGray,
+                    Foreground = Theme.TextMutedBrush(),
                     FontSize = 11,
+                    ToolTip = fHint,
                 };
                 var fld = f;
                 cb.Click += (_, _) =>
@@ -1160,7 +1313,7 @@ public sealed class InspectorPanel : StackPanel
             else if (f.Kind is TailKind.Str or TailKind.Count && f.ReshapeableWithin(_tailFrame))
             {
                 // A rename or a ramp-count change: same guarded rebuild, different value type.
-                var box = new TextBox { Margin = new Thickness(4, 0, 0, 0), FontSize = 11 };
+                var box = new TextBox { Margin = new Thickness(4, 0, 0, 0), FontSize = 11, ToolTip = fHint };
                 var fld = f;
                 box.LostFocus += (_, _) => CommitStruct(fld, box);
                 box.KeyDown += (_, e) => { if (e.Key == Key.Enter) CommitStruct(fld, box); };
@@ -1170,7 +1323,7 @@ public sealed class InspectorPanel : StackPanel
             }
             else if (f.EditableWithin(_tailFrame))
             {
-                var box = new TextBox { Margin = new Thickness(4, 0, 0, 0), FontSize = 11 };
+                var box = new TextBox { Margin = new Thickness(4, 0, 0, 0), FontSize = 11, ToolTip = fHint };
                 var fld = f;   // capture the struct for the handlers
                 box.LostFocus += (_, _) => CommitNamed(fld, box);
                 box.KeyDown += (_, e) => { if (e.Key == Key.Enter) CommitNamed(fld, box); };
@@ -1187,10 +1340,11 @@ public sealed class InspectorPanel : StackPanel
                 {
                     VerticalAlignment = VerticalAlignment.Center,
                     FontSize = 11,
-                    Foreground = Brushes.Gray,
+                    Foreground = Theme.TextMutedBrush(),
                     TextAlignment = TextAlignment.Right,
                     Margin = new Thickness(4, 0, 0, 0),
                     TextTrimming = TextTrimming.CharacterEllipsis,
+                    ToolTip = "Shown only \u2014 these values belong to the object next door in the file, so changing them here would change two objects at once.",
                 };
                 Grid.SetColumn(ro, 1);
                 g.Children.Add(ro);
@@ -1308,4 +1462,261 @@ public sealed class InspectorPanel : StackPanel
     }
 
     private static string Fmt(double v) => v.ToString("0.######", CultureInfo.InvariantCulture);
+
+    // --------------------------------------- Tasty Planet 1 object card ----
+
+    private void BuildTp1Panel()
+    {
+        var head = new TextBlock { Text = "This object", FontWeight = FontWeights.SemiBold, Foreground = new SolidColorBrush(Color.FromRgb(96, 165, 250)), Margin = new Thickness(0, 0, 0, 2) };
+        var note = new TextBlock
+        {
+            Text = "Every setting the file stores on this object, under the names the game itself uses \u2014 hover a name for what it does. A value the game lists by name comes up as a choice, so you can only pick one it recognises. Every change undoes with Ctrl+Z.",
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = Theme.TextMutedBrush(),
+            FontSize = 10,
+            Margin = new Thickness(0, 0, 0, 6),
+        };
+        var scroller = new ScrollViewer
+        {
+            Content = _tp1Rows,
+            MaxHeight = 400,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+        };
+        var outer = new StackPanel();
+        outer.Children.Add(head);
+        outer.Children.Add(note);
+        outer.Children.Add(scroller);
+        _tp1Box.Child = outer;
+    }
+
+    private static TastyEditor.Core.Levels.Tp1Handle? Tp1SourceOf(ISceneElem? sel) => sel switch
+    {
+        SceneCross cr => cr.Source as TastyEditor.Core.Levels.Tp1Handle,
+        SceneLine sl => sl.Source as TastyEditor.Core.Levels.Tp1Handle,
+        _ => null,
+    };
+
+    /// <summary>Show the card for a selected tp1 element (a marker or a path). Rebuilt only when the
+    /// selection moves to a different element, so a commit that re-shows the same element (the shell
+    /// re-projects after every tp1 write) refreshes its values without tearing down the row layout
+    /// mid-edit.</summary>
+    private void ManageTp1(ISceneElem? sel)
+    {
+        var th = Tp1SourceOf(sel);
+        var node = th?.Node;
+        if (th is null || node is null)
+        {
+            _boundTp1Path = "";
+            _tp1Box.Visibility = Visibility.Collapsed;
+            return;
+        }
+        string path = string.Join(",", th.Path);
+        if (path != _boundTp1Path)
+        {
+            _boundTp1Path = path;
+            RebuildTp1(th, node);
+        }
+        _tp1Box.Visibility = Visibility.Visible;
+    }
+
+    // Tags a node may carry many of: they are summarised (and edited in the view / as their own
+    // selection), never inlined here, because a dense level can hold hundreds.
+    private static readonly HashSet<string> Tp1BulkTags = new(StringComparer.Ordinal) { "tile", "pair" };
+    // Tags worth inlining as their own editable sub-group (a controller's target lists, a schedule's
+    // emits) rather than just counting.
+    private static readonly HashSet<string> Tp1ListTags = new(StringComparer.Ordinal) { "affect", "dontaffect", "emit" };
+
+    private void RebuildTp1(TastyEditor.Core.Levels.Tp1Handle th, TastyEditor.Core.Levels.Tp1Node node)
+    {
+        _tp1Suppress = true;
+        _tp1Rows.Children.Clear();
+        Tp1Element(th, node, 0);
+        _tp1Suppress = false;
+    }
+
+    /// <summary>Render one element's attributes, then (shallowly) its list children. Depth is capped
+    /// so an emitter → controller → affect chain reads as a nested group without running away.</summary>
+    private void Tp1Element(TastyEditor.Core.Levels.Tp1Handle th, TastyEditor.Core.Levels.Tp1Node node, int depth)
+    {
+        var title = new TextBlock
+        {
+            Text = Tp1Title(node.Tag),
+            FontWeight = depth == 0 ? FontWeights.SemiBold : FontWeights.Normal,
+            FontSize = depth == 0 ? 12 : 11,
+            Foreground = depth == 0 ? new SolidColorBrush(Color.FromRgb(96, 165, 250)) : Theme.TextMutedBrush(),
+            Margin = new Thickness(0, depth == 0 ? 0 : 6, 0, 2),
+        };
+        _tp1Rows.Children.Add(title);
+
+        if (node.Attrs.Count == 0)
+            _tp1Rows.Children.Add(new TextBlock { Text = "(no settings)", FontSize = 10, Foreground = Theme.TextMutedBrush(), Margin = new Thickness(0, 0, 0, 2) });
+
+        foreach (var a in node.Attrs)
+            Tp1AttrRow(th, node, a);
+
+        // Bulk children (tiles, path segments) get a one-line count, not a group per child.
+        var bulk = node.Children.Where(c => Tp1BulkTags.Contains(c.Tag)).GroupBy(c => c.Tag)
+                                .ToDictionary(g => g.Key, g => g.Count());
+        foreach (var (tag, n) in bulk)
+            _tp1Rows.Children.Add(new TextBlock
+            {
+                Text = tag == "tile" ? $"{n} tiles \u2014 click one in the view to edit it, or paint it from the sprite list."
+                                     : $"{n} path segments \u2014 drag their points in the view, double-click the line to add one, right-click a point to remove it.",
+                FontSize = 10, Foreground = Theme.TextMutedBrush(), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 1, 0, 3),
+            });
+
+        if (depth < 2)
+        {
+            foreach (var child in node.Children)
+            {
+                // A schedule is just a wrapper for its emits: descend through it without its own title.
+                if (child.Tag == "scheduledemit")
+                {
+                    foreach (var e in child.Children.Where(c => c.Tag == "emit"))
+                        Tp1Child(e, depth + 1);
+                    continue;
+                }
+                if (Tp1ListTags.Contains(child.Tag)) Tp1Child(child, depth + 1);
+                else if (child.Tag == "controller" || child.Tag == "scheduledemit" || child.Tag == "randomemit")
+                    Tp1Element(new TastyEditor.Core.Levels.Tp1Handle(node.Owner, child), child, depth + 1);
+            }
+        }
+
+        Tp1AddRow(node);
+    }
+
+    // One inlined list child (an affect / a timed emit): its attributes, plus a remove control.
+    private void Tp1Child(TastyEditor.Core.Levels.Tp1Node child, int depth)
+    {
+        var th = new TastyEditor.Core.Levels.Tp1Handle(child.Owner, child);
+        var head = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 0) };
+        head.Children.Add(new TextBlock
+        {
+            Text = Tp1Title(child.Tag), FontSize = 11, FontWeight = FontWeights.SemiBold,
+            Foreground = Theme.TextMutedBrush(), VerticalAlignment = VerticalAlignment.Center,
+        });
+        var rm = new Button
+        {
+            Content = "Remove", FontSize = 10, Padding = new Thickness(5, 0, 5, 0), Margin = new Thickness(8, 0, 0, 0),
+            ToolTip = "Take this out of the level.",
+        };
+        var captured = th;
+        rm.Click += (_, _) => { if (!_tp1Suppress) ApplyTp1Remove?.Invoke(captured); };
+        head.Children.Add(rm);
+        _tp1Rows.Children.Add(head);
+        if (child.Attrs.Count == 0)
+            _tp1Rows.Children.Add(new TextBlock { Text = "(no settings)", FontSize = 10, Foreground = Theme.TextMutedBrush(), Margin = new Thickness(0, 0, 0, 2) });
+        foreach (var a in child.Attrs)
+            Tp1AttrRow(th, child, a);
+    }
+
+    private void Tp1AttrRow(TastyEditor.Core.Levels.Tp1Handle th, TastyEditor.Core.Levels.Tp1Node node, TastyEditor.Core.Levels.Tp1Attr a)
+    {
+        string? hint = UiText.FieldHint(a.Key);
+        var g = new Grid { Margin = new Thickness(0, 1, 0, 1) };
+        g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(170) });
+        var lb = new TextBlock { Text = a.Key, VerticalAlignment = VerticalAlignment.Center, FontSize = 11, Foreground = Theme.TextMutedBrush(), ToolTip = hint };
+        Grid.SetColumn(lb, 0); g.Children.Add(lb);
+
+        FrameworkElement ctl;
+        string[]? opts = Tp1Options(node, a.Key);
+        if (opts is not null)
+        {
+            var combo = new ComboBox { IsEditable = true, FontSize = 11, Margin = new Thickness(4, 0, 0, 0), ToolTip = hint, ItemContainerStyle = Theme.ComboItemInkStyle() };
+            Theme.StyleCombo(combo);
+            foreach (var o in opts) combo.Items.Add(o);
+            combo.Text = a.Value;
+            var boxHandle = th; var key = a.Key;
+            combo.AddHandler(System.Windows.Controls.Primitives.TextBoxBase.TextChangedEvent, new TextChangedEventHandler((_, _) =>
+            {
+                if (_tp1Suppress) return;
+                var t = combo.Text.Trim();
+                if (t != a.Value) ApplyTp1Attr?.Invoke(boxHandle, key, t);
+            }));
+            ctl = combo;
+        }
+        else
+        {
+            var tb = new TextBox { Text = a.Value, FontSize = 11, Margin = new Thickness(4, 0, 0, 0), ToolTip = hint };
+            var boxHandle = th; var key = a.Key; var orig = a.Value;
+            void Commit() { if (_tp1Suppress) return; var t = tb.Text.Trim(); if (t != orig) ApplyTp1Attr?.Invoke(boxHandle, key, t); }
+            tb.LostFocus += (_, _) => Commit();
+            tb.KeyDown += (_, e) => { if (e.Key == Key.Enter) Commit(); };
+            ctl = tb;
+        }
+        Grid.SetColumn(ctl, 1); g.Children.Add(ctl);
+        _tp1Rows.Children.Add(g);
+    }
+
+    // Add-a-child controls, offered only on the elements that actually own such a list.
+    private void Tp1AddRow(TastyEditor.Core.Levels.Tp1Node node)
+    {
+        string tag = node.Tag;
+        if (tag is not ("controller" or "emitter")) return;
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 5, 0, 0) };
+        var th = new TastyEditor.Core.Levels.Tp1Handle(node.Owner, node);
+        void Btn(string label, string childTag, string tip)
+        {
+            var b = new Button { Content = label, FontSize = 10, Padding = new Thickness(6, 1, 6, 1), Margin = new Thickness(0, 0, 6, 0), ToolTip = tip };
+            var captured = th; var t = childTag;
+            b.Click += (_, _) => { if (!_tp1Suppress) ApplyTp1Add?.Invoke(captured, t); };
+            row.Children.Add(b);
+        }
+        if (tag == "controller")
+        {
+            Btn("Add target", "affect", "Let this behaviour act on one more kind of object.");
+            Btn("Add excluded", "dontaffect", "Keep this behaviour away from one more kind of object.");
+        }
+        else if (tag == "emitter")
+            Btn("Add timed emit", "emit", "Make the spawner release one more item at a set moment.");
+        if (row.Children.Count > 0) _tp1Rows.Children.Add(row);
+    }
+
+    /// <summary>The game's own choices for a few named attributes, or null for a free-text field.
+    /// An emitter / controller type and a target condition are fixed sets; an object type (entitydef)
+    /// and a tile picture (name) come from the loaded definitions so only a real one can be picked.</summary>
+    private string[]? Tp1Options(TastyEditor.Core.Levels.Tp1Node node, string key)
+    {
+        switch (key)
+        {
+            case "type" when node.Tag == "emitter": return new[] { "shot", "side", "spot" };
+            case "type" when node.Tag == "controller":
+                return new[] { "attack", "avoid", "evade", "leavelevel", "movedirection", "pathfollow", "stationary" };
+            case "conditon":
+            case "condition":
+                return new[] { "all", "larger", "largerequal", "none", "smaller", "smallerequal" };
+            case "entitydef":
+                return _tp1Names?.Invoke("entity");
+            case "name" when node.Tag == "tile":
+                return _tp1Names?.Invoke("tile");
+            default: return null;
+        }
+    }
+
+    // The plain word for a tp1 element type, shown as the card's group title (never the file's tag).
+    private static string Tp1Title(string tag) => tag switch
+    {
+        "level" => "Level settings",
+        "goo" => "Player start",
+        "emitter" => "Spawner",
+        "controller" => "Behaviour",
+        "affect" => "Acts on",
+        "dontaffect" => "Never acts on",
+        "scheduledemit" => "Timed releases",
+        "emit" => "Release",
+        "randomemit" => "Random releases",
+        "tilelayers" => "Background layers",
+        "tilelayer" => "Background layer",
+        "tile" => "Background tile",
+        "pair" => "Path segment",
+        "left" or "right" or "top" or "bottom" => tag + " edge",
+        "tip" => "Tip",
+        "comic" => "Comic",
+        "frame" => "Frame",
+        "end" => "Ending",
+        "path" => "Path",
+        _ => tag,
+    };
 }

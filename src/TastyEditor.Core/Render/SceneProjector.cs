@@ -19,6 +19,7 @@ public static class SceneProjector
             TbLevel tb => ProjectTb(tb),
             Tp2Level tp => ProjectTp2(tp),
             ElementLevel el => ProjectElement(el),
+            Tp1Level t1 => ProjectTp1(t1),
             _ => new SceneGeometry(),
         };
         // The cross list stays in RECORD order (the gates and the inspector index it as "the n-th
@@ -57,6 +58,7 @@ public static class SceneProjector
         TbDeco d => new PointD(d.PosX, d.PosY),
         DecoEditHandle h => ElemPosPt(h),
         EntityEditHandle eh => ElemEntPt(eh),
+        Tp1Handle th => Tp1GetPos(th),
         _ => null,
     };
 
@@ -86,6 +88,7 @@ public static class SceneProjector
             case TbDeco d: return TbEdit.SetDecoPos(d, x, y);
             case DecoEditHandle h: return ElemEdit.SetDecoPos(h, x, y);
             case EntityEditHandle eh: return ElemEdit.SetEntityPos(eh, x, y);
+            case Tp1Handle th: return Tp1SetPos(th, x, y);
             default: return false;
         }
     }
@@ -97,7 +100,7 @@ public static class SceneProjector
     /// ElementEngine <em>entity</em> (<see cref="EntityEditHandle"/>) is spliced inside its section's
     /// opaque block the same way (ElemEdit.MoveEntity).</summary>
     public static bool IsMovable(object? source) =>
-        source is TbEntity or Tp2Entity or Tp2Deco or TbDeco or DecoEditHandle or EntityEditHandle;
+        source is TbEntity or Tp2Entity or Tp2Deco or TbDeco or DecoEditHandle or EntityEditHandle || IsTp1Movable(source);
 
     // ------------------------------------------------- polygon (wall/area) editing --
     // These records are re-serialised from their fields on encode, so a vertex edit
@@ -183,12 +186,39 @@ public static class SceneProjector
             case TbDefinedArea ar: ar.PosX += dx; ar.PosY += dy; return true;
             case Tp2Wall wl: wl.PosX += dx; wl.PosY += dy; return true;
             case TbWater wt: wt.D[5] += dx; wt.D[6] += dy; return true;
+            case TbPath pt: MoveSpline(pt.SplinePoints, dx, dy); pt.PosX += dx; pt.PosY += dy; return true;   // extent (a size) is unchanged
+            case Tp2Path pt: MoveSpline(pt.SplinePoints, dx, dy); pt.PosX += dx; pt.PosY += dy; return true;
+            case ElemPathEdit pe when pe.Ok: return MoveElemPath(pe, dx, dy);
             case ElemShapeEdit ee when ee.Ok:
                 WriteF64(ee.Rec, ee.PosXOff, ee.PosX + dx);
                 WriteF64(ee.Rec, ee.PosYOff, ee.PosY + dy);
                 return true;
+            case Tp1Handle t1:
+                return MoveTp1(t1, dx, dy);
             default: return false;
         }
+    }
+
+    // A whole-path move shifts every spline anchor by the world delta. The handle pairs stay
+    // relative (a translation preserves them) and the extent is a size, so only the anchors and
+    // the bbox centre move — no tangent re-derivation is needed.
+    private static void MoveSpline(double[][] sps, double dx, double dy)
+    {
+        foreach (var sp in sps)
+            if (sp.Length >= 2) { sp[0] += dx; sp[1] += dy; }
+    }
+
+    private static bool MoveElemPath(ElemPathEdit pe, double dx, double dy)
+    {
+        for (int i = 0; i < pe.PointCount; i++)
+        {
+            int g = pe.PtsOff + i * 48;
+            WriteF64(pe.Rec, g, BitConverter.ToDouble(pe.Rec, g) + dx);
+            WriteF64(pe.Rec, g + 8, BitConverter.ToDouble(pe.Rec, g + 8) + dy);
+        }
+        WriteF64(pe.Rec, pe.PosXOff, pe.PosX + dx);
+        WriteF64(pe.Rec, pe.PosXOff + 8, pe.PosY + dy);
+        return true;
     }
 
     /// <summary>An editable record's byte span in the file, if the model carries it
@@ -252,6 +282,74 @@ public static class SceneProjector
         }
     }
 
+    /// <summary>Remove the shape vertex nearest <paramref name="world"/>, when the cursor is
+    /// within <paramref name="maxDistance"/> (world units) of it — the polygon parity of
+    /// <see cref="TryAddPolyVertex"/>, matching the Python editor's remove_vertex, which refuses
+    /// at three vertices (a shape must stay a polygon). A water box is an axis-aligned rectangle,
+    /// not a free polygon, so removing one of its corners is refused outright. Returns false and
+    /// changes NOTHING otherwise; <paramref name="removedAt"/> is the index that went.
+    /// Like the add path this is length-changing (one vertex's worth of coordinates leaves the
+    /// record) and stays lossless everywhere else.</summary>
+    public static bool TryRemovePolyVertex(object? src, int si, PointD world, double maxDistance, out int removedAt)
+    {
+        removedAt = -1;
+        if (src is TbWater) return false;   // axis-aligned box: its corners are not free vertices
+        if (src is ElemShapeEdit ee) return ElemRemoveVertex(ee, world, maxDistance, out removedAt);
+        if (!TryGetPoly(src, si, out var px, out var py, out var w, out var verts)) return false;
+        int n = verts!.Length;
+        if (n <= 3) return false;            // tbeditor.remove_vertex: never below a triangle
+
+        int best = 0;
+        double bestD = double.MaxValue;
+        for (int i = 0; i < n; i++)
+        {
+            double dx = px + verts[i][0] * w - world.X, dy = py + verts[i][1] * w - world.Y;
+            double d = Math.Sqrt(dx * dx + dy * dy);
+            if (d < bestD) { bestD = d; best = i; }
+        }
+        if (bestD > maxDistance) return false;
+
+        var nv = new double[n - 1][];
+        for (int i = 0; i < best; i++) nv[i] = verts[i];
+        for (int i = best + 1; i < n; i++) nv[i - 1] = verts[i];
+        if (!SetPolyVerts(src, si, nv)) return false;
+        removedAt = best;
+        return true;
+    }
+
+    // Same splice arithmetic as ElemAddVertex, inverted: cut the vertex's 16 bytes out of the
+    // record and decrement the polygon's own count i32 just before them.
+    private static bool ElemRemoveVertex(ElemShapeEdit ee, PointD world, double maxDistance, out int removedAt)
+    {
+        removedAt = -1;
+        if (!ee.Ok || ee.VertCount <= 3) return false;
+        var pts = ElemWorldPoints(ee);
+        int n = pts.Count;
+        int best = 0;
+        double bestD = double.MaxValue;
+        for (int i = 0; i < n; i++)
+        {
+            double dx = pts[i].X - world.X, dy = pts[i].Y - world.Y;
+            double d = Math.Sqrt(dx * dx + dy * dy);
+            if (d < bestD) { bestD = d; best = i; }
+        }
+        if (bestD > maxDistance) return false;   // off-handle: change nothing
+
+        int cutByte = ee.VertsOff + best * 16;
+        var old = ee.Rec;
+        var nv = new byte[old.Length - 16];
+        Buffer.BlockCopy(old, 0, nv, 0, cutByte);
+        Buffer.BlockCopy(old, cutByte + 16, nv, cutByte, old.Length - cutByte - 16);
+        int cnt = BitConverter.ToInt32(nv, ee.VertsOff - 4);
+        WriteI32(nv, ee.VertsOff - 4, cnt - 1);
+
+        ee.Sec.Records[ee.RecIndex] = nv;
+        ee.Rec = nv;
+        ee.VertCount = n - 1;
+        removedAt = best;
+        return true;
+    }
+
     private static double DistPointSeg(PointD p, PointD a, PointD b)
     {
         double vx = b.X - a.X, vy = b.Y - a.Y;
@@ -261,6 +359,278 @@ public static class SceneProjector
         t = Math.Clamp(t, 0, 1);
         double cx = p.X - (a.X + t * vx), cy = p.Y - (a.Y + t * vy);
         return Math.Sqrt(cx * cx + cy * cy);
+    }
+
+    // ------------------------------------------------- path (spline) editing --
+    // A path is an OPEN polyline of spline anchors (no closing edge). Each anchor is a world
+    // coordinate directly — there is no pos/width mapping as for a polygon vertex. Every group
+    // carries six doubles [anchor.x, anchor.y, in.x, in.y, out.x, out.y]; the two handle pairs are
+    // smooth tangents re-derived from the neighbour gap, so an anchor edit re-runs that derivation
+    // and recomputes the record's bbox (pos = centre, extent = size) to match a shipped path.
+    // tb/tp2 store typed SplinePoints the codec re-serialises (lossless); an element path is a
+    // raw-span record whose groups live at PtsOff + i*48, so an add splices 48 bytes and bumps the
+    // count i32 at PtsOff-4, a remove reverses it (never below two anchors).
+
+    /// <summary>True when <paramref name="src"/> is a field-/byte-editable path record.</summary>
+    public static bool IsEditablePath(object? src) =>
+        src is TbPath || src is Tp2Path || (src is ElemPathEdit pe && pe.Ok) || Tp1Pairs(src) is { Count: >= 1 };
+
+    /// <summary>A path's anchor count, or -1 when <paramref name="src"/> is not an editable path.</summary>
+    public static int PathPointCount(object? src) => src switch
+    {
+        TbPath tp => tp.SplinePoints.Length,
+        Tp2Path tp => tp.SplinePoints.Length,
+        ElemPathEdit pe => pe.Ok ? pe.PointCount : -1,
+        Tp1Handle th => Tp1Pairs(th) is { } ps ? ps.Count * 2 : -1,
+        _ => -1,
+    };
+
+    /// <summary>The live world-space spline anchors of an editable path, read from the model (so it
+    /// reflects prior edits). Empty when <paramref name="src"/> is not an editable path.</summary>
+    public static List<PointD> PathWorldPoints(object? src)
+    {
+        var list = new List<PointD>();
+        switch (src)
+        {
+            case TbPath tp: foreach (var sp in tp.SplinePoints) if (sp.Length >= 2) list.Add(new PointD(sp[0], sp[1])); break;
+            case Tp2Path tp: foreach (var sp in tp.SplinePoints) if (sp.Length >= 2) list.Add(new PointD(sp[0], sp[1])); break;
+            case ElemPathEdit pe when pe.Ok:
+                for (int i = 0; i < pe.PointCount; i++)
+                    list.Add(new PointD(BitConverter.ToDouble(pe.Rec, pe.PtsOff + i * 48), BitConverter.ToDouble(pe.Rec, pe.PtsOff + i * 48 + 8)));
+                break;
+            case Tp1Handle th when Tp1Pairs(th) is { } ps:
+                foreach (var pr in ps)
+                {
+                    list.Add(new PointD(pr.Num("x1") ?? 0, -(pr.Num("y1") ?? 0)));
+                    list.Add(new PointD(pr.Num("x2") ?? 0, -(pr.Num("y2") ?? 0)));
+                }
+                break;
+        }
+        return list;
+    }
+
+    /// <summary>Move anchor <paramref name="pi"/> of an editable path to a world point, re-deriving
+    /// the smooth tangents and the record bbox. Returns false when the index is out of range.</summary>
+    public static bool SetPathPointWorld(object? src, int pi, PointD world)
+    {
+        switch (src)
+        {
+            case TbPath tp:
+                if (!SetAnchor(tp.SplinePoints, pi, world, out double px, out double py, out double ex, out double ey)) return false;
+                tp.PosX = px; tp.PosY = py; tp.ExtentXGuess = ex; tp.ExtentYGuess = ey; tp.PathFlag = 1; return true;
+            case Tp2Path tp:
+                if (!SetAnchor(tp.SplinePoints, pi, world, out px, out py, out ex, out ey)) return false;
+                tp.PosX = px; tp.PosY = py; tp.ExtentXGuess = ex; tp.ExtentYGuess = ey; tp.PathFlag = 1; return true;
+            case ElemPathEdit pe when pe.Ok:
+                var sps = ReadPathSpline(pe);
+                if (!SetAnchor(sps, pi, world, out px, out py, out ex, out ey)) return false;
+                WritePathSpline(pe, sps); WritePathBox(pe, px, py, ex, ey); return true;
+            case Tp1Handle th when Tp1Pairs(th) is { } ps && pi >= 0 && pi < ps.Count * 2:
+                // One anchor maps to a pair's start or end; the segment's own handles (coef*) stay.
+                Tp1Edit.SetPairPoint(ps[pi / 2], pi % 2, world.X, -world.Y);
+                return true;
+            default: return false;
+        }
+    }
+
+    // Set one group's anchor and recompute the shared tangents + bbox. A malformed group is
+    // widened to six doubles so the handle pairs have somewhere to land.
+    private static bool SetAnchor(double[][] sps, int pi, PointD world, out double px, out double py, out double ex, out double ey)
+    {
+        px = py = ex = ey = 0;
+        if (pi < 0 || pi >= sps.Length) return false;
+        if (sps[pi].Length < 6)
+        {
+            var g = new double[6];
+            if (sps[pi].Length > 0) g[0] = sps[pi][0];
+            if (sps[pi].Length > 1) g[1] = sps[pi][1];
+            sps[pi] = g;
+        }
+        sps[pi][0] = world.X; sps[pi][1] = world.Y;
+        EditOps.RecomputeSpline(sps, out px, out py, out ex, out ey);
+        return true;
+    }
+
+    /// <summary>Insert a new anchor on the path segment nearest <paramref name="world"/>, but only
+    /// when that open segment is within <paramref name="maxEdgeDistance"/> of the cursor (a path
+    /// has no closing edge, so only segments i..i+1 count). Changes NOTHING when the nearest segment
+    /// is farther (no partial mutation). <paramref name="insertedAt"/> is the draggable index.</summary>
+    public static bool TryAddPathPoint(object? src, PointD world, double maxEdgeDistance, out int insertedAt)
+    {
+        insertedAt = -1;
+        var pts = PathWorldPoints(src);
+        if (pts.Count < 2) return false;
+        int best = 0; double bestD = double.MaxValue;
+        for (int i = 0; i < pts.Count - 1; i++)   // open polyline: n-1 segments, no wrap
+        {
+            double d = DistPointSeg(world, pts[i], pts[i + 1]);
+            if (d < bestD) { bestD = d; best = i; }
+        }
+        if (bestD > maxEdgeDistance) return false;
+        insertedAt = best + 1;
+
+        switch (src)
+        {
+            case TbPath tp: tp.SplinePoints = GrowSpline(tp.SplinePoints, insertedAt, world, out double px, out double py, out double ex, out double ey); tp.PosX = px; tp.PosY = py; tp.ExtentXGuess = ex; tp.ExtentYGuess = ey; tp.PathFlag = 1; return true;
+            case Tp2Path tp: tp.SplinePoints = GrowSpline(tp.SplinePoints, insertedAt, world, out px, out py, out ex, out ey); tp.PosX = px; tp.PosY = py; tp.ExtentXGuess = ex; tp.ExtentYGuess = ey; tp.PathFlag = 1; return true;
+            case ElemPathEdit pe when pe.Ok: return ElemPathAddPoint(pe, insertedAt, world);
+            case Tp1Handle th when Tp1Pairs(th) is { } ps && th.Node is not null:
+            {
+                // tp1 path segments are <pair>s: extend the chain with a new one landing at the
+                // click, joining the previous segment's far end so the path stays continuous.
+                var created = Tp1Edit.AddPair(th.Node!);
+                if (created is null) { insertedAt = -1; return false; }
+                var pairs = th.Node!.Children.FindAll(c => c.Tag == "pair");
+                var prev = pairs.Count >= 2 ? pairs[pairs.Count - 2] : null;
+                Tp1Edit.SetPairCoords(created, prev?.Num("x2"), prev?.Num("y2"), world.X, -world.Y);
+                insertedAt = pairs.Count * 2 - 1;
+                return true;
+            }
+            default: insertedAt = -1; return false;
+        }
+    }
+
+    /// <summary>Remove the anchor nearest <paramref name="world"/> when the cursor is within
+    /// <paramref name="maxDistance"/> of it — the path parity of <see cref="TryAddPathPoint"/>. A
+    /// path stays an open polyline, so removal is refused only below two anchors (not three).</summary>
+    public static bool TryRemovePathPoint(object? src, PointD world, double maxDistance, out int removedAt)
+    {
+        removedAt = -1;
+        var pts = PathWorldPoints(src);
+        if (pts.Count <= 2) return false;   // an open path may keep just two anchors
+        int best = 0; double bestD = double.MaxValue;
+        for (int i = 0; i < pts.Count; i++)
+        {
+            double dx = pts[i].X - world.X, dy = pts[i].Y - world.Y;
+            double d = Math.Sqrt(dx * dx + dy * dy);
+            if (d < bestD) { bestD = d; best = i; }
+        }
+        if (bestD > maxDistance) return false;
+        removedAt = best;
+
+        switch (src)
+        {
+            case TbPath tp: tp.SplinePoints = ShrinkSpline(tp.SplinePoints, best, out double px, out double py, out double ex, out double ey); tp.PosX = px; tp.PosY = py; tp.ExtentXGuess = ex; tp.ExtentYGuess = ey; tp.PathFlag = 1; return true;
+            case Tp2Path tp: tp.SplinePoints = ShrinkSpline(tp.SplinePoints, best, out px, out py, out ex, out ey); tp.PosX = px; tp.PosY = py; tp.ExtentXGuess = ex; tp.ExtentYGuess = ey; tp.PathFlag = 1; return true;
+            case ElemPathEdit pe when pe.Ok: return ElemPathRemovePoint(pe, best);
+            case Tp1Handle th when Tp1Pairs(th) is { } ps && ps.Count > 1:
+            {
+                // Drop the whole segment that owns the nearest anchor (a path may keep one pair).
+                if (!Tp1Edit.Remove(ps[best / 2])) { removedAt = -1; return false; }
+                return true;
+            }
+            default: removedAt = -1; return false;
+        }
+    }
+
+    // Insert a six-double anchor at index into a copy of the typed spline list, re-deriving the
+    // tangents + bbox for the whole path (the caller reassigns the record's pos/extent).
+    private static double[][] GrowSpline(double[][] sps, int at, PointD world, out double px, out double py, out double ex, out double ey)
+    {
+        var nv = new double[sps.Length + 1][];
+        for (int i = 0; i < at; i++) nv[i] = sps[i];
+        nv[at] = new[] { world.X, world.Y, 0.0, 0.0, 0.0, 0.0 };
+        for (int i = at; i < sps.Length; i++) nv[i + 1] = sps[i];
+        EditOps.RecomputeSpline(nv, out px, out py, out ex, out ey);
+        return nv;
+    }
+
+    private static double[][] ShrinkSpline(double[][] sps, int at, out double px, out double py, out double ex, out double ey)
+    {
+        var nv = new double[sps.Length - 1][];
+        for (int i = 0, k = 0; i < sps.Length; i++) if (i != at) nv[k++] = sps[i];
+        EditOps.RecomputeSpline(nv, out px, out py, out ex, out ey);
+        return nv;
+    }
+
+    private static double[][] ReadPathSpline(ElemPathEdit pe)
+    {
+        var sps = new double[pe.PointCount][];
+        for (int i = 0; i < pe.PointCount; i++)
+        {
+            int g = pe.PtsOff + i * 48;
+            sps[i] = new[]
+            {
+                BitConverter.ToDouble(pe.Rec, g), BitConverter.ToDouble(pe.Rec, g + 8),
+                BitConverter.ToDouble(pe.Rec, g + 16), BitConverter.ToDouble(pe.Rec, g + 24),
+                BitConverter.ToDouble(pe.Rec, g + 32), BitConverter.ToDouble(pe.Rec, g + 40),
+            };
+        }
+        return sps;
+    }
+
+    // Write every group's six doubles back into the CURRENT record bytes (no length change — used
+    // by an anchor move); pos/extent are written separately by WritePathBox.
+    private static void WritePathSpline(ElemPathEdit pe, double[][] sps)
+    {
+        for (int i = 0; i < pe.PointCount && i < sps.Length; i++)
+        {
+            int g = pe.PtsOff + i * 48;
+            for (int k = 0; k < 6; k++) WriteF64(pe.Rec, g + k * 8, sps[i][k]);
+        }
+    }
+
+    private static void WritePathBox(ElemPathEdit pe, double px, double py, double ex, double ey)
+    {
+        WriteF64(pe.Rec, pe.PosXOff, px); WriteF64(pe.Rec, pe.PosXOff + 8, py);
+        WriteF64(pe.Rec, pe.ExtXOff, ex); WriteF64(pe.Rec, pe.ExtXOff + 8, ey);
+    }
+
+    // The record grows by one 48-byte group spliced in at PtsOff + at*48. The count i32 (at
+    // PtsOff-4) and the pos/extent pairs both precede the splice point, so their offsets are stable;
+    // the record is walk-delimited (not length-prefixed), so the lengthening stays lossless.
+    private static bool ElemPathAddPoint(ElemPathEdit pe, int at, PointD world)
+    {
+        var sps = ReadPathSpline(pe);
+        var list = new List<double[]>(sps);
+        list.Insert(at, new[] { world.X, world.Y, 0.0, 0.0, 0.0, 0.0 });
+        var final = list.ToArray();
+        EditOps.RecomputeSpline(final, out double px, out double py, out double ex, out double ey);
+
+        int oldLen = pe.Rec.Length;
+        var rec = new byte[oldLen + 48];
+        int cut = pe.PtsOff + at * 48;
+        Buffer.BlockCopy(pe.Rec, 0, rec, 0, cut);
+        Buffer.BlockCopy(pe.Rec, cut, rec, cut + 48, oldLen - cut);
+
+        pe.Rec = rec;
+        pe.PointCount = final.Length;
+        for (int i = 0; i < final.Length; i++)
+        {
+            int g = pe.PtsOff + i * 48;
+            for (int k = 0; k < 6; k++) WriteF64(rec, g + k * 8, final[i][k]);
+        }
+        WriteI32(rec, pe.PtsOff - 4, final.Length);
+        WritePathBox(pe, px, py, ex, ey);
+        pe.Sec.Records[pe.RecIndex] = rec;
+        return true;
+    }
+
+    private static bool ElemPathRemovePoint(ElemPathEdit pe, int at)
+    {
+        var sps = ReadPathSpline(pe);
+        var list = new List<double[]>(sps);
+        list.RemoveAt(at);
+        var final = list.ToArray();
+        EditOps.RecomputeSpline(final, out double px, out double py, out double ex, out double ey);
+
+        int oldLen = pe.Rec.Length;
+        var rec = new byte[oldLen - 48];
+        int cut = pe.PtsOff + at * 48;
+        Buffer.BlockCopy(pe.Rec, 0, rec, 0, cut);
+        Buffer.BlockCopy(pe.Rec, cut + 48, rec, cut, oldLen - cut - 48);
+
+        pe.Rec = rec;
+        pe.PointCount = final.Length;
+        for (int i = 0; i < final.Length; i++)
+        {
+            int g = pe.PtsOff + i * 48;
+            for (int k = 0; k < 6; k++) WriteF64(rec, g + k * 8, final[i][k]);
+        }
+        WriteI32(rec, pe.PtsOff - 4, final.Length);
+        WritePathBox(pe, px, py, ex, ey);
+        pe.Sec.Records[pe.RecIndex] = rec;
+        return true;
     }
 
     // ------------------------------- element (f4/f5) raw-span polygon editing --
@@ -351,6 +721,7 @@ public static class SceneProjector
             case TbDeco d: return TbEdit.MoveDeco(d, dx, dy);
             case DecoEditHandle h: return ElemEdit.MoveDeco(h, dx, dy);
             case EntityEditHandle eh: return ElemEdit.MoveEntity(eh, dx, dy);
+            case Tp1Handle th: return MoveTp1(th, dx, dy);
             default: return false;
         }
     }
@@ -369,7 +740,7 @@ public static class SceneProjector
     /// A TP2 decoration stores its turn in the <c>size.raw</c> centidegree field, exactly as
     /// the projector draws it (<c>RotationDeg = -SizeRaw/100</c>).</summary>
     public static bool IsRotatable(object? source) =>
-        source is TbDeco or DecoEditHandle or TbEntity or Tp2Entity or Tp2Deco or EntityEditHandle;
+        source is TbDeco or DecoEditHandle or TbEntity or Tp2Entity or Tp2Deco or EntityEditHandle || Tp1Angle(source) is not null;
 
     /// <summary>The record's current rotation in world degrees, or null when the source has
     /// no editable rotation.</summary>
@@ -381,6 +752,7 @@ public static class SceneProjector
         Tp2Entity e => -e.Rotation / 100.0,
         Tp2Deco d => -d.SizeRaw / 100.0,
         EntityEditHandle eh => ElemEdit.EntityRotationDeg(eh),
+        Tp1Handle th => Tp1Angle(th),
         _ => null,
     };
 
@@ -394,6 +766,7 @@ public static class SceneProjector
         Tp2Entity e => Tp2SetRot(e, deg),
         Tp2Deco d => Tp2SetDecoRot(d, deg),
         EntityEditHandle eh => ElemEdit.SetEntityRotationDeg(eh, deg),
+        Tp1Handle th => Tp1SetAngle(th, deg),
         _ => false,
     };
 
@@ -427,7 +800,7 @@ public static class SceneProjector
     // source reports not flippable and the inspector row stays hidden.
 
     /// <summary>True when the marker's <c>Source</c> is a decoration whose facing can be edited.</summary>
-    public static bool IsFlippable(object? source) => source is TbDeco or DecoEditHandle or Tp2Deco;
+    public static bool IsFlippable(object? source) => source is TbDeco or DecoEditHandle or Tp2Deco || Tp1Flip(source).HasValue;
 
     /// <summary>The record's current flip flags (false, false for anything without the field).</summary>
     public static (bool X, bool Y) GetFlip(object? source) => source switch
@@ -435,6 +808,7 @@ public static class SceneProjector
         TbDeco d => (d.FlipX, d.FlipY),
         DecoEditHandle h => ElemEdit.DecoFlip(h),
         Tp2Deco d => (d.FlipX, d.FlipY),
+        Tp1Handle th => Tp1Flip(th) ?? (false, false),
         _ => (false, false),
     };
 
@@ -449,6 +823,14 @@ public static class SceneProjector
             case TbDeco d: return TbEdit.SetDecoFlip(d, fx, fy, out resized);
             case DecoEditHandle h: return ElemEdit.SetDecoFlip(h, fx, fy, out resized);
             case Tp2Deco t: return Tp2Edit.SetDecoFlip(t, fx, fy, out resized);
+            case Tp1Handle th when Tp1Flip(th).HasValue:
+            {
+                var n = th.Node!;
+                Tp1Edit.SetBool(n, "flipx", fx);
+                Tp1Edit.SetBool(n, "flipy", fy);
+                resized = false;
+                return true;
+            }
             default: resized = false; return false;
         }
     }
@@ -691,6 +1073,55 @@ public static class SceneProjector
         _ => null,
     };
 
+    // --------------------------------------------------------- resizing (R2) --
+    //
+    // The viewport's corner grips commit through these, the same lane the inspector's size row
+    // uses: a decoration through its two dimension ints (uniform via "dsize", free axes via the
+    // pair below — every deco family genuinely stores two fields, so free resize is exposed for
+    // all three), an entity through its mass, which is the single field the game's own render
+    // scale is derived from (there is no second axis to expose).
+
+    /// <summary>True when the viewport may offer a resize grip: a deco (uniform or free axes) or
+    /// an entity (uniform only, through mass).</summary>
+    public static bool IsResizable(object? s) => IsFieldDeco(s) ||
+        (s is TbEntity or Tp2Entity or EntityEditHandle && FieldGet(s, "mass") is not null);
+
+    /// <summary>Free (per-axis) resize is exposed only for decorations; an entity's rendered
+    /// size comes from one mass field, so a second axis has nothing to write.</summary>
+    public static bool SupportsFreeAxes(object? s) => IsFieldDeco(s) && FieldDecoAxes(s) is not null;
+
+    /// <summary>The decoration's two dimension scales (raw / DIM_BASE per axis, the pair the
+    /// renderer turns into its world box), or null for a non-deco / unreadable record. A stored
+    /// zero reads back as scale 1.0, exactly as the projection treats it.</summary>
+    public static (double W, double H)? FieldDecoAxes(object? s) => s switch
+    {
+        Tp2Deco d => (AxisScale(d.DimsRaw is { Length: >= 1 } ? d.DimsRaw[0] : 0),
+                      AxisScale(d.DimsRaw is { Length: >= 2 } ? d.DimsRaw[1] : 0)),
+        TbDeco td => TbEdit.DecoDimsRaw(td) is (int w, int h) ? (AxisScale(w), AxisScale(h)) : null,
+        DecoEditHandle dh => ElemEdit.DecoDims(dh) is (int w, int h) ? (AxisScale(w), AxisScale(h)) : null,
+        _ => null,
+    };
+
+    private static double AxisScale(int raw) => (raw != 0 ? raw : Tp2DimBase) / Tp2DimBase;
+
+    /// <summary>Write both decoration dimension scales independently (length-preserving in every
+    /// family: two fixed int32 fields, typed or spliced). False for a non-deco source.</summary>
+    public static bool FieldSetDecoAxes(object? s, double scaleW, double scaleH) => s switch
+    {
+        Tp2Deco d => Tp2SetDecoAxes(d, scaleW, scaleH),
+        TbDeco td => TbEdit.SetDecoAxes(td, scaleW, scaleH),
+        DecoEditHandle dh => ElemEdit.SetDecoAxes(dh, scaleW, scaleH),
+        _ => false,
+    };
+
+    private static bool Tp2SetDecoAxes(Tp2Deco d, double w, double h)
+    {
+        if (d.DimsRaw is not { Length: >= 2 }) d.DimsRaw = new int[2];
+        d.DimsRaw[0] = Math.Max(1, (int)Math.Round(w * Tp2DimBase));
+        d.DimsRaw[1] = Math.Max(1, (int)Math.Round(h * Tp2DimBase));
+        return true;
+    }
+
     // --------------------------------------- named behaviour-tail view (all games) ---
     //
     // Everything an entity record carries after the priority int32 is a real, named engine value: each
@@ -903,6 +1334,7 @@ public static class SceneProjector
             case TbEntity te:
                 cr.Mass = TbEdit.EntityMass(te) ?? te.Mass;
                 cr.ColorRgba = te.ColorRgba;
+                ApplyEntityFacing(cr);
                 break;
             case TbDeco td:
                 cr.Mass = td.DimW;
@@ -917,6 +1349,7 @@ public static class SceneProjector
                 cr.Mass = ElemEdit.EntityMass(eh) ?? cr.Mass;
                 cr.ColorRgba = ElemEdit.EntityColor(eh) ?? cr.ColorRgba;
                 cr.Opacity = FadeOpacity(cr.ColorRgba);
+                ApplyEntityFacing(cr);
                 break;
             case DecoEditHandle dh:
                 if (ElemEdit.DecoDims(dh) is (int dwRaw, int dhRaw))
@@ -952,6 +1385,53 @@ public static class SceneProjector
         wt.D[11] = sw / 2; wt.D[12] = sh / 2;
     }
 
+    // ---------------------------------------------------- entity facing (flip flag) --
+    //
+    // ElementEntity::drawBase (the same routine for movers AND pinned props) derives the sprite's
+    // orientation from two record values: the authored centidegree angle and a per-instance FLIP WORD
+    // (the first int32 of the optional box block, <see cref="EntityFraming.EntDisplay.Flip">). Its logic
+    // is literally:
+    //
+    //     spriteAngle = flip ? -recordAngle : recordAngle;   Sprite::setFlip(false, flip)
+    //
+    // So facing is NOT a move/path heuristic and NOT an angle threshold — it is that stored word. A boat
+    // authored at ~180 deg has it set (drawn upright, facing the other way); a barnacle pinned at an
+    // arbitrary angle has it set when the level turned it over. Both are the SAME mirror here. In the
+    // y-down screen the un-flipped turn is already -raw/100 (<paramref name="angleDeg"/>); a flagged
+    // record negates that once more (=> +raw/100) and mirrors vertically (FlipY). The old horizontal
+    // mirror is dropped: drawBase never mirrors the base sprite horizontally (setFlip passes false there).
+    //
+    // cr.FlipY here is a projection-only render hint (entities are not IsFlippable, so the inspector flip
+    // row and the byte edit lane are untouched); the record's raw rotation field stays the source of truth.
+    private static void EntityFacing(double angleDeg, bool flip, out double tilt, out bool flipY)
+    {
+        if (flip) { flipY = true; tilt = -angleDeg; }   // drawBase: negate the authored turn + vertical mirror
+        else { flipY = false; tilt = angleDeg; }
+    }
+
+    /// <summary>The element-entity record's own flip flag (drawBase's facing mirror). Reads it via the same
+    /// codec pass the load path uses, so it agrees with the projected sprite.</summary>
+    public static bool EntityFlipped(object? source) => source switch
+    {
+        TbEntity e => e.Flip,
+        EntityEditHandle eh => ElemEdit.EntityFlip(eh),
+        _ => false,
+    };
+
+    /// <summary>Re-derive an element entity cross's render rotation + facing mirror from its live source
+    /// rotation and record flip flag, so a rotation edit (inspector set, R2 nudge) lands the same way a
+    /// level loads. No-op for non-entity or non-ElementEngine sources (TP2 entities keep the plain turn).
+    /// Reads the record's true rotation field, never the already-decomposed <c>RotationDeg</c>, so it is
+    /// idempotent however many times it runs.</summary>
+    public static void ApplyEntityFacing(SceneCross cr)
+    {
+        if (cr.Kind != SceneKind.Entity) return;
+        if (cr.Source is not (TbEntity or EntityEditHandle)) return;
+        if (GetRotationDeg(cr.Source) is not double deg) return;
+        EntityFacing(deg, EntityFlipped(cr.Source), out double tilt, out bool flipY);
+        cr.RotationDeg = tilt; cr.FlipX = false; cr.FlipY = flipY;
+    }
+
     private static SceneGeometry ProjectTb(TbLevel tb)
     {
         var g = new SceneGeometry();
@@ -969,15 +1449,16 @@ public static class SceneProjector
                 g.Crosses.Add(new SceneCross { Kind = SceneKind.Area, Label = a.AreaName, Layer = li, At = new PointD(a.PosX, a.PosY) });
             }
             foreach (var p in layer.Paths)
-                AddSpline(g, p.SplinePoints, SceneKind.Path, p.PathName, li);
+                AddSpline(g, p.SplinePoints, SceneKind.Path, p.PathName, li, p);
             int elp = 0;   // _finalize_entities: entity priority chains down the section too
             foreach (var e in layer.Entities)
             {
                 elp += e.Priority;
+                EntityFacing(-e.Rotation / 100.0, e.Flip, out double tilt, out bool faceFlipY);
                 g.Crosses.Add(new SceneCross
                 {
                     Kind = SceneKind.Entity, Layer = li, At = new PointD(e.PosX, e.PosY), Source = e,
-                    SpriteName = e.Name, Mass = e.Mass, RotationDeg = -e.Rotation / 100.0, ColorRgba = e.ColorRgba,
+                    SpriteName = e.Name, Mass = e.Mass, RotationDeg = tilt, FlipY = faceFlipY, ColorRgba = e.ColorRgba,
                     ZOrder = ZEntity(li, elp),
                 });
             }
@@ -1021,7 +1502,7 @@ public static class SceneProjector
                 g.Crosses.Add(new SceneCross { Kind = SceneKind.Wall, Label = w.WallTypeName, Layer = li, At = new PointD(w.PosX, w.PosY) });
             }
             foreach (var p in layer.Paths)
-                AddSpline(g, p.SplinePoints, SceneKind.Path, p.PathName, li);
+                AddSpline(g, p.SplinePoints, SceneKind.Path, p.PathName, li, p);
             foreach (var e in layer.Entities)
                 g.Crosses.Add(new SceneCross
                 {
@@ -1070,6 +1551,249 @@ public static class SceneProjector
         return g;
     }
 
+    // ------------------------------------------------------------ tp1 ------
+    //
+    // Tasty Planet 1 stores positions in a Y-UP world (the base tk editor draws with
+    // dy = -py * zoom); the scene here is Y-DOWN, so every tp1 projection negates Y and
+    // MoveTp1 negates the incoming scene delta to stay inverse-consistent. Source on every
+    // cross / line is the verbatim <see cref="Tp1Node"/>, so a drag routes through
+    // <see cref="Tp1Edit"/>'s span-localised writes and the inspector re-reads the same node.
+    private static SceneGeometry ProjectTp1(Tp1Level t1)
+    {
+        var g = new SceneGeometry();
+        var root = t1.Root;
+        double w = root.Num("width") ?? 4000, h = root.Num("height") ?? 4000;
+        double l = root.Num("left") ?? -w / 2, r = root.Num("right") ?? w / 2;
+        double top = root.Num("top") ?? h / 2, bot = root.Num("bottom") ?? -h / 2;
+
+        // The level's own settings (its attributes live on <level>) are edited from the dedicated
+        // Level properties window, not a viewport element — so no placeholder cross is projected here
+        // (an artless marker sitting in the corner of every TP1 level read as a stray grey X).
+
+        // Paint above every background tile: the goo and the emitters are the live objects of the
+        // level, while the tile layers are scenery stacked below them.
+        int tileLayerCount = root.Child("tilelayers") is { } tl ? tl.Kids("tilelayer").Count() : 0;
+        int entIdx = 0;
+        int staged = 0;   // running count of positionless emitters parked in the staging grid
+
+        if (t1.Goo is { } goo)
+            g.Crosses.Add(new SceneCross
+            {
+                Kind = SceneKind.Entity, Label = "goo", Layer = 0, Source = new Tp1Handle(t1, goo),
+                At = new PointD(goo.Num("x") ?? 0, -(goo.Num("y") ?? 0)), SpriteName = "greygoo",
+                Mass = goo.Num("area") ?? 1.0,
+                IsGoo = true,
+                ZOrder = ZEntity(tileLayerCount, entIdx++),
+            });
+
+        foreach (var em in t1.Emitters)
+        {
+            string type = em.Get("type") ?? "";
+            string def = em.Get("entitydef") ?? "";
+
+            // A pathfollow controller draws the route the entity travels AND decides where its
+            // marker sits — a player sees it enter at the path's head, so the marker rides there.
+            List<PointD>? pathPts = null;
+            foreach (var ctrl in em.Kids("controller"))
+                if (ctrl.Get("type") == "pathfollow")
+                {
+                    var pts = new List<PointD>();
+                    foreach (var pr in ctrl.Kids("pair"))
+                    {
+                        pts.Add(new PointD(pr.Num("x1") ?? 0, -(pr.Num("y1") ?? 0)));
+                        pts.Add(new PointD(pr.Num("x2") ?? 0, -(pr.Num("y2") ?? 0)));
+                    }
+                    if (pts.Count >= 2)
+                    {
+                        g.Lines.Add(new SceneLine { Kind = SceneKind.Path, Label = def.Length > 0 ? def : "path", Layer = 0, Source = new Tp1Handle(t1, ctrl), Points = pts });
+                        pathPts = pts;
+                    }
+                }
+
+            // Marker placement is a DISPLAY choice only — the handle still writes the real element,
+            // so the untouched file round-trips byte-identical. Priority mirrors what a player sees:
+            // the head of its path, else its own posx/posy, else the edge it spawns from; a
+            // positionless projectile emitter (the bullet / shot spawners) is parked in a separated
+            // staging grid OUTSIDE the level bounds, so it stays editable without covering play space.
+            PointD at;
+            if (pathPts is not null) at = pathPts[0];
+            else if (em.Num("posx") is double px) at = new PointD(px, -(em.Num("posy") ?? 0));
+            else if (em.Child("left") is not null || em.Child("right") is not null ||
+                     em.Child("top") is not null || em.Child("bottom") is not null)
+                at = SideEdgePoint(em, l, r, top, bot);
+            else at = StagePoint(staged++, l, r, -top, -bot);
+            g.Crosses.Add(new SceneCross
+            {
+                Kind = SceneKind.Entity,
+                Label = def.Length > 0 ? def : type,
+                Layer = 0, Source = new Tp1Handle(t1, em), At = at,
+                SpriteName = def.Length > 0 ? def : null,
+                // The emitter's spawned footprint is its area in world units squared (an entity's
+                // rendered area IS its mass), so size the marker off the spawn area, not the default 1.
+                Mass = em.Num("minarea") ?? em.Num("maxarea") ?? 1.0,
+                // The emitter's <angle> (plain degrees, exactly as the tile case reads it) is its turn;
+                // the inspector reads it back through Tp1Angle, so the projection must seed RotationDeg
+                // from it too — otherwise the sprite loads unrotated and only turns after a manual set.
+                RotationDeg = em.Num("angle") ?? 0,
+                FlipX = em.Get("flipx") == "true", FlipY = em.Get("flipy") == "true", FlipBeforeRotate = true,
+                ZOrder = ZEntity(tileLayerCount, entIdx++),
+            });
+        }
+
+        var layers = root.Child("tilelayers");
+        int layerIdx = 0;
+        if (layers is not null)
+            foreach (var layer in layers.Kids("tilelayer"))
+            {
+                int cols = Math.Max(1, (int)(layer.Num("tileswide") ?? 1));
+                double tw = layer.Num("tilewidth") ?? 256, th = layer.Num("tileheight") ?? 256;
+                int i = 0;
+                foreach (var tile in layer.Kids("tile"))
+                {
+                    int col = i % cols, row = i / cols;
+                    string nm = tile.Get("name") ?? "";
+                    // An empty cell: the game's blank-grid sentinel is the tile named "null" (it has
+                    // no artwork by design). Emitting no marker keeps the grid clean of footprint X's.
+                    if (nm.Length == 0 || string.Equals(nm, "null", StringComparison.Ordinal)) { i++; continue; }
+                    g.Crosses.Add(new SceneCross
+                    {
+                        Kind = SceneKind.Deco, Label = nm, Layer = layerIdx, Source = new Tp1Handle(t1, tile),
+                        At = new PointD(l + (col + 0.5) * tw, -(bot + (row + 0.5) * th)),
+                        SpriteName = nm.Length > 0 ? nm : null,
+                        ColorRgba = TileRgba(tile),
+                        Opacity = tile.Num("a") is double a0 && a0 < 1.0 ? a0 : null,
+                        RotationDeg = tile.Num("angle") ?? 0,
+                        // main.py blits every tile through get_tk_image(..., transpose_v=True): the source
+                        // cell is flipped top-bottom FIRST (aligning its pixel rows to the Y-up world),
+                        // THEN the author's flipx/flipy, THEN rotated clockwise. transpose_v and flipy are
+                        // both centre vertical mirrors, so they compose to FlipY = !flipy; the clockwise
+                        // turn is WPF's positive Rotate on the y-down canvas, so the raw angle feeds through
+                        // unchanged. Skip the always-on mirror and the blit is a pure rotation, but the
+                        // game's is a reflection — curved elbows (traintrackscurve / roadsmallturn) then land
+                        // mirror-imaged, bending the wrong way. FlipBeforeRotate keeps the mirrors in the
+                        // PIL order (flip, then turn). Display-only; the source node bytes are untouched.
+                        FlipX = tile.Get("flipx") == "true", FlipY = tile.Get("flipy") != "true", FlipBeforeRotate = true,
+                        DecoWorldW = tw, DecoWorldH = th,
+                        ZOrder = ZDeco(layerIdx, i),
+                    });
+                    i++;
+                }
+                layerIdx++;
+            }
+        return g;
+    }
+
+    // A staging pad for emitters the level never gave a position (the bullet / shot spawners). The
+    // scene is Y-DOWN, so sceneTop / sceneBot are already the on-screen y of the level's top and
+    // bottom edges. The pad sits a clear margin BELOW the bottom edge, laid out left-to-right in
+    // rows — separated cells so each stays selectable and none of them cover the play field.
+    private static PointD StagePoint(int idx, double l, double r, double sceneTop, double sceneBot)
+    {
+        const double perRow = 8, gap = 220;
+        double span = Math.Max(r - l, 512);
+        double step = Math.Max(320, span / perRow);
+        int col = idx % (int)perRow, row = idx / (int)perRow;
+        return new PointD(l + (col + 0.5) * step, sceneBot + gap + row * step);
+    }
+
+    private static PointD SideEdgePoint(Tp1Node em, double l, double r, double top, double bot)
+    {
+        if (em.Child("left") is { } le) return new PointD(l, -EdgeMid(le));
+        if (em.Child("right") is { } ri) return new PointD(r, -EdgeMid(ri));
+        if (em.Child("top") is { } tp) return new PointD(EdgeMid(tp), -top);
+        if (em.Child("bottom") is { } bt) return new PointD(EdgeMid(bt), -bot);
+        return default;   // unreachable: an edge-less, position-less emitter is staged, not sent here
+    }
+
+    private static double EdgeMid(Tp1Node n) => ((n.Num("min") ?? 0) + (n.Num("max") ?? 0)) / 2;
+
+    private static byte[]? TileRgba(Tp1Node tile)
+    {
+        double? a = tile.Num("a"), rr = tile.Num("r"), gg = tile.Num("g"), bb = tile.Num("b");
+        if (a is null && rr is null && gg is null && bb is null) return null;
+        static byte B(double? v) => (byte)Math.Clamp(Math.Round((v ?? 1.0) * 255), 0, 255);
+        return new[] { B(rr), B(gg), B(bb), byte.MaxValue };   // alpha rides on SceneCross.Opacity
+    }
+
+    // A tp1 drag: goo / spot / shot emitter move posx/posy; a pathfollow controller moves its
+    // whole pair chain. The scene is Y-down and the data Y-up, so the y delta is negated. The
+    // handle re-resolves to the live element each call, so a continuous drag stays correct even
+    // though every write rebuilds the node tree.
+    private static bool MoveTp1(Tp1Handle th, double dx, double dy)
+    {
+        var node = th.Node;
+        if (node is null) return false;
+        switch (node.Tag)
+        {
+            case "goo": return Tp1Edit.MoveGoo(node.Owner, dx, -dy);
+            case "emitter": return Tp1Edit.MoveEmitter(node, dx, -dy);
+            case "controller": return Tp1Edit.MovePath(node, dx, -dy);
+            default: return false;
+        }
+    }
+
+    // ------------------------------------------------------- tp1 helpers ----
+
+    /// <summary>A tp1 marker's live element, resolved through its stable path (null once gone).</summary>
+    private static Tp1Node? Tp1El(object? source) => (source as Tp1Handle)?.Node;
+
+    /// <summary>The world position the inspector shows / edits for a goo or a spot / shot emitter.
+    /// A side emitter (edge bounds, no posx) and every other element report null (not positionable).</summary>
+    private static PointD? Tp1GetPos(Tp1Handle th)
+    {
+        var n = th.Node;
+        if (n is null) return null;
+        if (n.Tag == "goo") return new PointD(n.Num("x") ?? 0, -(n.Num("y") ?? 0));
+        if (n.Tag == "emitter" && n.Has("posx")) return new PointD(n.Num("posx") ?? 0, -(n.Num("posy") ?? 0));
+        return null;
+    }
+
+    private static bool Tp1SetPos(Tp1Handle th, double x, double y)
+    {
+        var n = th.Node;
+        if (n is null) return false;
+        if (n.Tag == "goo") { Tp1Edit.SetNum(n, "x", x); Tp1Edit.SetNum(th.Node!, "y", -y); return true; }
+        if (n.Tag == "emitter" && n.Has("posx")) { Tp1Edit.SetNum(n, "posx", x); Tp1Edit.SetNum(th.Node!, "posy", -y); return true; }
+        return false;
+    }
+
+    private static bool IsTp1Movable(object? source) => source switch
+    {
+        Tp1Handle th => th.Node is { } n && (n.Tag == "goo" || (n.Tag == "emitter" && n.Has("posx"))),
+        _ => false,
+    };
+
+    // A background tile's own turn, read as its degrees directly (the shipped field is already a
+    // plain angle, not a centidegree word). Null for anything without an <c>angle</c> attribute.
+    private static double? Tp1Angle(object? source) => Tp1El(source) is { } n && n.Has("angle") ? n.Num("angle") : null;
+
+    private static bool Tp1SetAngle(object? source, double deg)
+    {
+        var n = Tp1El(source);
+        if (n is null || !n.Has("angle")) return false;
+        Tp1Edit.SetNum(n, "angle", deg);
+        return true;
+    }
+
+    // A tile's facing (its flipx / flipy booleans). Null when the element carries neither, so the
+    // flip row stays hidden for non-tile markers.
+    private static (bool X, bool Y)? Tp1Flip(object? source)
+    {
+        var n = Tp1El(source);
+        if (n is null || (!n.Has("flipx") && !n.Has("flipy"))) return null;
+        return (n.Get("flipx") == "true", n.Get("flipy") == "true");
+    }
+
+    /// <summary>A <c>pathfollow</c> controller's ordered <c>&lt;pair&gt;</c> segments, or null when the
+    /// source is not such a controller (so the path lane treats it as non-editable).</summary>
+    private static List<Tp1Node>? Tp1Pairs(object? source)
+    {
+        var n = Tp1El(source);
+        if (n is null || n.Tag != "controller" || n.Get("type") != "pathfollow") return null;
+        var ps = n.Children.FindAll(c => c.Tag == "pair");
+        return ps.Count > 0 ? ps : null;
+    }
+
     private static bool AddShapePolys(SceneGeometry g, List<TbShape> shapes, double px, double py, double width, SceneKind kind, string? label, int layer, object owner)
     {
         if (shapes.Count == 0) return false;
@@ -1106,10 +1830,10 @@ public static class SceneProjector
         return any;
     }
 
-    private static void AddSpline(SceneGeometry g, double[][] pts, SceneKind kind, string? label, int layer)
+    private static void AddSpline(SceneGeometry g, double[][] pts, SceneKind kind, string? label, int layer, object? owner = null)
     {
         if (pts.Length < 2) return;
-        var line = new SceneLine { Kind = kind, Label = label, Layer = layer };
+        var line = new SceneLine { Kind = kind, Label = label, Layer = layer, Source = owner };
         foreach (var sp in pts)
             if (sp.Length >= 2) line.Points.Add(new PointD(sp[0], sp[1]));
         if (line.Points.Count >= 2) g.Lines.Add(line);
@@ -1173,7 +1897,8 @@ public static class SceneProjector
                 SpriteName = h.Name, Source = new EntityEditHandle(el, sec, i),
             };
             var disp = EntityFraming.ReadBody(sec.Block, h.XyOff, EntityFraming.ExtF4F5, recEnd);
-            cr.RotationDeg = -disp.Rotation / 100.0;
+            EntityFacing(-disp.Rotation / 100.0, disp.Flip, out double tilt, out bool faceFlipY);
+            cr.RotationDeg = tilt; cr.FlipX = false; cr.FlipY = faceFlipY;
             if (disp.HasBody) { cr.Mass = disp.Mass; cr.ColorRgba = disp.ColorRgba; cr.Opacity = FadeOpacity(disp.ColorRgba); }
             ap += disp.Priority;
             cr.ZOrder = ZEntity(li, ap);
@@ -1221,7 +1946,13 @@ public static class SceneProjector
                 SpriteName = name, Mass = dim0, RotationDeg = -rot / 100.0,
                 DecoWorldW = DecoWorld(dim0), DecoWorldH = DecoWorld(dim1),
                 ColorRgba = color, Opacity = FadeOpacity(color),
-                ZOrder = ZDeco(li, lp), FlipX = flipX, FlipY = flipY,
+                // ElementDecoration::draw2 mirrors the SOURCE cell in image space (the anchor math
+                // rewrites the cell within its box with the cell width, and setFlip / the blit's
+                // flip flags rewrite the UV) BEFORE the unchanged angle is applied - so a deco that
+                // is both rotated AND flipped lands as mirror-then-turn, not turn-then-mirror.
+                // FlipBeforeRotate is a no-op when RotationDeg == 0 (why most flipped decos already
+                // looked right); it only differs on the rotated+flipped subset.
+                ZOrder = ZDeco(li, lp), FlipX = flipX, FlipY = flipY, FlipBeforeRotate = true,
             });
         }
     }
@@ -1255,13 +1986,18 @@ public static class SceneProjector
         int extra = b[o]; o += 1;
         if (extra != 0)
         {
-            // The engine's boundaries inside the 24-byte block: two readBoolean int32 (readBoolean
-            // consumes a whole word and tests == 1) then four readInt. Words 0/1 are the record's
-            // ElementDecoration::setFlipX / setFlipY, i.e. the mirroring the game applies in local
-            // space before rotation - the property that was missing from the render.
+            // The engine stores the decoration's mirror as two BOOL BYTES at the head of the
+            // 24-byte block: ElementDecoration::writeBinary emits writeBoolean(this[0x40]) then
+            // writeBoolean(this[0x41]); draw2 passes setFlip((bool)this[0x40],(bool)this[0x41])
+            // with the angle (this[0x38]) left untouched. DGUI::BinaryFile::readBoolean consumes ONE
+            // byte and returns `byte == 1` (not != 0), so a flag is set only on an exact 1 - a block
+            // byte of 2/3/... means NOT flipped. Python's read_deco matches: extra_bools = read(2).
+            // The prior int32-word read (byte 0 / byte 4) mislabelled flagged decos; the residual
+            // 2 stragglers here had byte0 nonzero but != 1, so they rendered mirrored when the game
+            // does not. Still skip the whole 24-byte block after the two flag bytes.
             if (o + 24 > b.Length) return false;
-            flipX = ByteCursor.ReadI32At(b, o) == 1;
-            flipY = ByteCursor.ReadI32At(b, o + 4) == 1;
+            flipX = b[o] == 1;
+            flipY = b[o + 1] == 1;
             o += 24;
         }
         if (o + 4 > b.Length) return false;
@@ -1337,10 +2073,12 @@ public static class SceneProjector
     private static void ProjectPathSection(SceneGeometry g, List<Section> layer, int idx, int li)
     {
         if (idx < 0 || idx >= layer.Count) return;
-        foreach (var rec in layer[idx].Records)
+        var sec = layer[idx];
+        for (int ri = 0; ri < sec.Records.Count; ri++)
         {
+            var rec = sec.Records[ri];
             var r = new GeoReader(rec);
-            if (r.TryPath(out var pts)) EmitSpline(g, pts, SceneKind.Path, li);
+            if (r.TryPath(out var pts)) EmitSpline(g, pts, SceneKind.Path, li, MakePathEdit(sec, ri, rec, r));
         }
     }
 
@@ -1367,6 +2105,18 @@ public static class SceneProjector
 
     // Build an in-place edit handle for a raw-span element wall/area record, or null when
     // the walk did not land on a well-formed polygon (then the shape stays read-only).
+    /// <summary>Public factory for an in-place wall/area edit handle over one framed element
+    /// record (a freshly appended create needs a delete-able handle without a full re-project).
+    /// Returns null when the record does not walk to a well-formed polygon.</summary>
+    public static ElemShapeEdit? BuildShapeEdit(Section sec, int ri, bool isWall)
+    {
+        if (ri < 0 || ri >= sec.Records.Count) return null;
+        var rec = sec.Records[ri];
+        var r = new GeoReader(rec);
+        if (!r.TryWallOrArea(isWall, out _, out _, out _, out _, out _, out _)) return null;
+        return MakeEdit(sec, ri, rec, r);
+    }
+
     private static ElemShapeEdit? MakeEdit(Section sec, int ri, byte[] rec, GeoReader r)
     {
         if (r.PosXOff < 0 || r.VertsOff < 0 || r.VertCount < 2) return null;
@@ -1380,12 +2130,27 @@ public static class SceneProjector
         };
     }
 
-    private static void EmitSpline(SceneGeometry g, List<double[]> pts, SceneKind kind, int layer)
+    private static void EmitSpline(SceneGeometry g, List<double[]> pts, SceneKind kind, int layer, object? owner = null)
     {
-        var line = new SceneLine { Kind = kind, Layer = layer };
+        var line = new SceneLine { Kind = kind, Layer = layer, Source = owner };
         foreach (var sp in pts)
             if (sp.Length >= 2) line.Points.Add(new PointD(sp[0], sp[1]));
         if (line.Points.Count >= 2) g.Lines.Add(line);
+    }
+
+    // Build an in-place edit handle for a raw-span element path record, or null when the walk did
+    // not land on a well-formed spline (then the path stays read-only). Mirrors MakeEdit for shapes.
+    private static ElemPathEdit? MakePathEdit(Section sec, int ri, byte[] rec, GeoReader r)
+    {
+        if (r.PathPosOff < 0 || r.PathPtsOff < 0 || r.PathCount < 2) return null;
+        if (r.PathPosOff + 16 > rec.Length || r.PathExtOff + 16 > rec.Length) return null;
+        if (r.PathPtsOff + (long)r.PathCount * 48 > rec.Length) return null;
+        return new ElemPathEdit
+        {
+            Sec = sec, RecIndex = ri, Rec = rec,
+            PosXOff = r.PathPosOff, ExtXOff = r.PathExtOff,
+            PtsOff = r.PathPtsOff, PointCount = r.PathCount,
+        };
     }
 
     private static void EmitXY(SceneGeometry g, List<double[]> pts, SceneKind kind, int layer)
@@ -1405,6 +2170,9 @@ public static class SceneProjector
         // Byte offsets the walk lands on, captured so an element wall/area record (a raw
         // span with no typed fields) can still be edited in place. -1 = not found.
         public int PosXOff = -1, VertsOff = -1, VertCount;
+        // Path record offsets (captured by TryPath): the record position pair, the extent pair
+        // and the start / count of the six-double spline groups.
+        public int PathPosOff = -1, PathExtOff = -1, PathPtsOff = -1, PathCount = -1;
         public GeoReader(byte[] rec) { _d = rec; _p = 0; }
 
         private bool Has(int n) => (long)_p + n <= _d.Length && n >= 0;
@@ -1473,7 +2241,7 @@ public static class SceneProjector
             {
                 // Each shape: name string, then Circle = 3 f64, else i32 vertcount + n*(x,y).
                 string? nm = ReadStringOrNull();
-                if (nm == "Circle") { F64(); F64(); F64(); }
+                if (Levels.ElementShapes.IsCircleName(nm)) { F64(); F64(); F64(); }
                 else
                 {
                     int n = I32();
@@ -1491,15 +2259,21 @@ public static class SceneProjector
         public bool TryPath(out List<double[]> pts)
         {
             pts = new();
+            PathPosOff = PathExtOff = PathPtsOff = PathCount = -1;
             try
             {
                 SkipString();
-                F64(); F64(); F64(); F64();
+                PathPosOff = _p;            // record position pair (x, y)
+                F64(); F64();
+                PathExtOff = _p;            // record extent pair (w, h)
+                F64(); F64();
                 int flag = U8();
                 if (flag == 1)
                 {
                     int n = I32();
                     if (n < 0 || n > 4_000_000) throw new StopException("bad path n");
+                    PathPtsOff = _p;        // first of n six-double spline groups
+                    PathCount = n;
                     for (int i = 0; i < n; i++)
                     {
                         double x = F64(); double y = F64();
@@ -1509,7 +2283,7 @@ public static class SceneProjector
                 }
                 return pts.Count >= 2;
             }
-            catch (StopException) { pts = new(); return false; }
+            catch (StopException) { pts = new(); PathPosOff = PathExtOff = PathPtsOff = PathCount = -1; return false; }
         }
 
         // PointList/Sec4: string; f64×4; i32 n; n×(f64,f64); i32.
@@ -1560,4 +2334,32 @@ public sealed class ElemShapeEdit
         Rec is not null && VertCount >= 2
         && PosXOff + 24 <= Rec.Length
         && VertsOff + (long)VertCount * 16 <= Rec.Length;
+}
+
+/// <summary>An editable handle onto a raw-span element (Forever / Final Bite) path record.
+/// Like <see cref="ElemShapeEdit"/> the record is an opaque <c>byte[]</c> the encoder re-emits
+/// verbatim, so editing patches the spline's doubles in place. The path layout is
+/// <c>&lt;string&gt;&lt;f64 posx,posy&gt;&lt;f64 extx,exty&gt;&lt;u8 flag&gt;[&lt;i32 n&gt;&lt;n × 6 f64&gt;]&lt;i32&gt;</c>;
+/// <see cref="PtsOff"/> is the first six-double group (anchor x,y then two relative tangent
+/// pairs) and <see cref="PointCount"/> the number of them. <see cref="PosXOff"/> / <see cref="ExtXOff"/>
+/// are the record's position and extent pairs, recomputed from the anchors after any edit.</summary>
+public sealed class ElemPathEdit
+{
+    public Section Sec = default!;
+    public int RecIndex;
+    public byte[] Rec = default!;      // == Sec.Records[RecIndex]
+    public int PosXOff;                // record position x (y at +8)
+    public int ExtXOff;                // record extent x (y at +8)
+    public int PtsOff;                 // first spline group's anchor x (y at +8)
+    public int PointCount;
+
+    public double PosX => BitConverter.ToDouble(Rec, PosXOff);
+    public double PosY => BitConverter.ToDouble(Rec, PosXOff + 8);
+
+    /// <summary>The captured offsets still describe a well-formed spline inside the current
+    /// record bytes (re-checked after a length-changing add / remove).</summary>
+    public bool Ok =>
+        Rec is not null && PointCount >= 2
+        && PosXOff + 16 <= Rec.Length && ExtXOff + 16 <= Rec.Length
+        && PtsOff + (long)PointCount * 48 <= Rec.Length;
 }

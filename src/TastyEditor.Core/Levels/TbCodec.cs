@@ -176,7 +176,7 @@ public sealed class TbCodec
         {
             string? name = r.Str();
             var sh = new TbShape { Name = name ?? "" };
-            if (sh.Name == "Circle")
+            if (ElementShapes.IsCircleName(sh.Name))
             {
                 sh.IsCircle = true;
                 sh.Cx = r.F64(); sh.Cy = r.F64(); sh.Radius = r.F64();
@@ -329,6 +329,7 @@ public sealed class TbCodec
             // lossless carrier, so the byte-faithful save path is untouched.
             ent.Name = ReadRecordName(raw, nameLen);
             var disp = EntityFraming.ReadBody(raw, xo, EntityFraming.ExtTb, raw.Length);
+            ent.Flip = disp.Flip;
             if (disp.HasBody)
             {
                 ent.Rotation = disp.Rotation;
