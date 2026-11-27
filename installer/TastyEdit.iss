@@ -60,10 +60,10 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "assocbin"; Description: "Open .bin and .xml level files with {#MyAppName}"; Flags: unchecked
 
 [Files]
-; Source="." with RecurseInSubdirs includes the folder's own top-level files, which is what the
-; publish layout needs: the exe, its dlls and the icons folder all sit one level down.
+; recursesubdirs keeps the publish layout as it is under {app} — the exe and its dlls at the top,
+; icons\ as a folder — and it is a Flags value, not a parameter of its own.
 ; The .pdb is a build artefact — a player never gets a stack symbol out of it.
-Source: "{#PublishDir}\*"; RecurseInSubdirs: "."; Excludes: "*.pdb"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PublishDir}\*"; Excludes: "*.pdb"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs
 
 [Icons]
 ; The plain entry: the editor with its start screen. No IconFilename, so Windows reads the icon out
@@ -84,9 +84,10 @@ Name: "{group}\Tasty Planet Final Bite"; Filename: "{app}\TastyEdit.exe"; Parame
 ; The registry layout lives in the editor (Editing/FileAssociation.cs), not here: the File menu, this
 ; installer and the uninstaller all call the same code, so there is one definition of the ProgId and
 ; one set of keys to keep honest. runascurrentuser matters if this setup is ever elevated — the
-; association must still land in HKCU, where the editor looks for it.
+; association must still land in HKCU, where the editor looks for it. The Check expression takes
+; single quotes: in a .iss, double quotes delimit the parameter itself.
 Filename: "{app}\TastyEdit.exe"; Parameters: "register-association ""{app}\TastyEdit.exe"""; \
-    Check: TaskSelected("assocbin"); StatusMsg: "Associating level files..."; \
+    Check: TaskSelected('assocbin'); StatusMsg: "Associating level files..."; \
     Flags: runhidden runascurrentuser waituntilterminated
 
 Filename: "{app}\TastyEdit.exe"; Description: "Launch {#MyAppName}"; \
