@@ -166,16 +166,34 @@ public sealed partial class SpriteResolver
     /// </list>
     /// The affine path is taken only for a Final Bite rig that actually collides, so the 134 rigs the
     /// crop path already renders correctly are untouched.</summary>
-    public bool TryResolveRig(string rawName, out TbRigPlan plan)
+    /// <remarks>One-argument form of <see cref="TryResolveRig(string, out TbRigPlan, out bool)"/> for
+    /// callers that do not care whether the rig was named or merely guessed.</remarks>
+    public bool TryResolveRig(string rawName, out TbRigPlan plan) => TryResolveRig(rawName, out plan, out _);
+
+    /// <summary>Overload that also reports whether the rig was reached only through the greedy
+    /// bare-prefix pass. A boundary hit (<c>attackhelicopter_air</c> for the rig <c>attackhelicopter</c>)
+    /// is the level naming its rig; a bare-prefix hit is the resolver guessing, and a guess must not
+    /// outrank art the name owns by itself — which is how Tasty Blue's <c>fishbowl_side</c> and
+    /// <c>fishfood_sink1a</c> were painted as the <c>fish</c> rig.</summary>
+    public bool TryResolveRig(string rawName, out TbRigPlan plan, out bool rigIsBarePrefixGuess)
     {
-        plan = null!;
+        plan = null!; rigIsBarePrefixGuess = false;
         if (_rigs is not { Count: > 0 } || string.IsNullOrEmpty(rawName)) return false;
 
         // Rig names carry the pre-alias art spelling (attackhelicopter, greatwhiteshark) while the level
         // record's TYPE is `<rig>_<set>`, so match the raw name first and only then the stripped forms.
-        string? rigName = TbSkeletons.FindRig(_rigs, rawName)
-            ?? TbSkeletons.FindRig(_rigs, EntityName.CatalogBase(rawName))
-            ?? TbSkeletons.FindRig(_rigs, EntityName.SpeciesKey(rawName));
+        // The word-boundary pass runs over all three spellings before the greedy one: a boundary hit on
+        // the species key is a real name, while a bare prefix on the raw name is only a guess.
+        string? rigName = TbSkeletons.FindRigBoundary(_rigs, rawName)
+            ?? TbSkeletons.FindRigBoundary(_rigs, EntityName.CatalogBase(rawName))
+            ?? TbSkeletons.FindRigBoundary(_rigs, EntityName.SpeciesKey(rawName));
+        if (rigName is null)
+        {
+            rigName = TbSkeletons.BarePrefixRig(_rigs, rawName)
+                ?? TbSkeletons.BarePrefixRig(_rigs, EntityName.CatalogBase(rawName))
+                ?? TbSkeletons.BarePrefixRig(_rigs, EntityName.SpeciesKey(rawName));
+            rigIsBarePrefixGuess = rigName is not null;
+        }
         if (rigName is null || !_rigs.TryGetValue(rigName, out var root)) return false;
 
         var placed = new List<TbPart>();

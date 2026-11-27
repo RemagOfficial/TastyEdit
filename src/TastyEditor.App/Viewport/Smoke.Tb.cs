@@ -61,17 +61,21 @@ public static partial class Smoke
         foreach (var (name, recs) in names)
         {
             // Same tier order SpriteSource.TryBuildNamed paints with: a multi-part rig outranks the cell
-            // tables, because its cells are pieces of one sheet rather than the whole creature, and the
-            // engine's own registration answer outranks a cell that merely spells like the TYPE.
-            bool hasRig = res.TryResolveRig(name, out var plan);
-            bool rigFirst = hasRig && plan!.Parts.Count > 1;
+            // tables when the name actually spells the rig (`<rig>_<set>`), because its cells are pieces of
+            // one sheet rather than the whole creature, and the engine's own registration answer outranks a
+            // cell that merely spells like the TYPE. A rig reached only by the greedy prefix is a guess and
+            // waits at tier 4 — that guess is what drew a fish over every fishbowl in the sink levels.
+            bool hasRig = res.TryResolveRig(name, out var plan, out bool rigIsGuess);
+            bool rigFirst = hasRig && plan!.Parts.Count > 1 && !rigIsGuess;
             string engineArt = string.Empty;
             bool hasEngine = !rigFirst
                 && res.TryGetEngineArt(name, out engineArt) && engineArt != name
                 && (res.TryResolveRig(engineArt, out _) || res.TryResolveDirectCell(engineArt, 0, out _)
                     || res.TryResolveFallbackCell(engineArt, 0, out _));
             bool hasDirect = !rigFirst && !hasEngine && res.TryResolveDirectCell(name, 0, out _);
-            bool hasFallback = !hasDirect && !rigFirst && !hasEngine && res.TryResolveFallbackCell(name, 0, out _);
+            bool hasRigLate = !rigFirst && !hasEngine && !hasDirect && hasRig;
+            bool hasFallback = !rigFirst && !hasEngine && !hasDirect && !hasRigLate
+                && res.TryResolveFallbackCell(name, 0, out _);
             if (rigFirst)
             {
                 rig++; recsRig += recs; perRig.TryAdd(plan!.Rig, name);
@@ -83,6 +87,7 @@ public static partial class Smoke
                 if (engineUsed.Count < 40) engineUsed.Add($"{name}->{engineArt}");
             }
             else if (hasDirect) { direct++; recsDirect += recs; }
+            else if (hasRigLate) { rig++; recsRig += recs; }
             else if (hasFallback) { stem++; recsStem += recs; }
             else { none++; recsNone += recs; if (misses.Count < 40) misses.Add(name); }
 
@@ -94,7 +99,8 @@ public static partial class Smoke
 
             // One row per TYPE with the pixels it produces, so a tier change can be diffed as an actual
             // image difference rather than a coverage number. `ink` is a cheap checksum over BGRA.
-            string tier = rigFirst ? "rig" : hasEngine ? "engine" : hasDirect ? "direct" : hasFallback ? "stem" : "none";
+            string tier = rigFirst ? "rig" : hasEngine ? "engine" : hasDirect ? "direct"
+                : hasRigLate ? "rig(fallback)" : hasFallback ? "stem" : "none";
             string artOf = rigFirst ? plan!.Rig : hasEngine ? engineArt : "";
             resolve.Add($"{name},{recs},{tier},{artOf},{w},{h},{Ink(built)}");
 

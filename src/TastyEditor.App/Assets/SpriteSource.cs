@@ -101,9 +101,10 @@ public sealed class SpriteSource : ISpriteSource
     }
 
     /// <summary>The entity-name cascade in the order the shipped data supports it: (1) the entity's
-    /// <c>skeletons.bin</c> rig, composited from its parts, whenever the rig owns more than one part,
-    /// (2) the art the executable itself registers the entity with, (3) a cell the tables name directly,
-    /// (4) the rig again for a single-part rig, (5) the art stem and then the fuzzy spelling.
+    /// <c>skeletons.bin</c> rig, composited from its parts, whenever the LEVEL named that rig and it owns
+    /// more than one part, (2) the art the executable itself registers the entity with, (3) a cell the
+    /// tables name directly, (4) any rig the name matches, even by prefix, (5) the art stem and then the
+    /// fuzzy spelling.
     ///
     /// The rig leads because a multi-part rig IS the creature while its cells are pieces of one sheet:
     /// Tasty Blue's <c>canoe</c> cell is the hull alone, so answering with that cell drew a boat with no
@@ -120,7 +121,13 @@ public sealed class SpriteSource : ISpriteSource
     /// horizon bands that no entity registration references at all, while the records name
     /// <c>rock_middle1</c> / <c>rock_middle2</c>. The re-entry uses the art name rather than resolving it
     /// to a cell outright, so an entity registered against a rig (<c>crab_normal</c> → <c>crab</c>) still
-    /// composites and one registered against a cell keeps that cell's pivot and animation opacity.</summary>
+    /// composites and one registered against a cell keeps that cell's pivot and animation opacity.
+    ///
+    /// Tier 1 only fires for a word-boundary rig match (<c>canoe_lab1</c> for the rig <c>canoe</c>), not for
+    /// the greedy prefix fallback, which is a guess about the name rather than the name's own claim. Tasty
+    /// Blue's decoration types are atlas cell spellings, so <c>fishbowl_side</c> matched the rig <c>fish</c>
+    /// on prefix alone and was painted as a fish (1.0.1); as a guess it now waits behind tiers 2 and 3 and
+    /// only wins where nothing else can draw it.</summary>
     private bool TryBuildNamed(string rawName, int frame, byte[]? tint, out BitmapSource image,
         out int w, out int h, out double pivotX, out double pivotY, out double opacity)
         => TryBuildNamed(rawName, frame, tint, false, out image, out w, out h, out pivotX, out pivotY, out opacity);
@@ -129,8 +136,16 @@ public sealed class SpriteSource : ISpriteSource
         out int w, out int h, out double pivotX, out double pivotY, out double opacity)
     {
         image = null!; w = h = 0; pivotX = pivotY = 0.5; opacity = 1.0;
-        bool hasRig = _res.TryResolveRig(rawName, out var plan);
-        bool rigFirst = hasRig && plan!.Parts.Count > 1;
+        // A rig only leads the tables when the NAME asked for it — the level spelling `<rig>_<set>`, which
+        // TryResolveRig reports as a boundary match. When only the greedy bare-prefix pass answers the name
+        // merely STARTS like a rig, and Tasty Blue proves how wrong that can be: its decoration types are
+        // atlas cell spellings by construction, so `fishbowl_side`, `fishfood_sink1a` and `island2` all
+        // reached the `fish` / `island` rigs that way and drew another object's picture. A guess therefore
+        // falls behind the engine's registration and the name's own cell below, and still paints the
+        // composite at tier 4 when nothing else can — which is what Final Bite's concatenated
+        // `catfishatlantis1_7` names need.
+        bool hasRig = _res.TryResolveRig(rawName, out var plan, out bool rigIsGuess);
+        bool rigFirst = hasRig && plan!.Parts.Count > 1 && !rigIsGuess;
         if (rigFirst && TryBuildRig(plan, out var whole))
             return Finish(Tint(whole, tint), plan.PivotX, plan.PivotY, 1.0,
                 out image, out w, out h, out pivotX, out pivotY, out opacity);

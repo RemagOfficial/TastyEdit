@@ -16,12 +16,12 @@ What's in this release is listed in [CHANGELOG.md](CHANGELOG.md).
 
 ## Get started
 
-**The easy way is the installer.** Download `TastyEdit-Setup-1.0.0.exe`, run it, and it puts the
+**The easy way is the installer.** Download `TastyEdit-Setup-1.0.1.exe`, run it, and it puts the
 program in your Start Menu with a shortcut for each of the five games. It installs for your Windows
 user account only — into `%LOCALAPPDATA%\Programs\TastyEdit` — and doesn't ask for administrator
 rights.
 
-**Or take the zip** if you'd rather just have a folder: download `TastyEdit-1.0.0-win-x64.zip`,
+**Or take the zip** if you'd rather just have a folder: download `TastyEdit-1.0.1-win-x64.zip`,
 unzip it anywhere and open `TastyEdit.exe`. Nothing gets installed and nothing else gets touched.
 
 Either way, Windows will probably interrupt the first run with a blue *"Windows protected your PC"*

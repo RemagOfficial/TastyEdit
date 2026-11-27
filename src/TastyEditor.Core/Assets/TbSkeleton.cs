@@ -171,6 +171,17 @@ public static class TbSkeletons
     /// (<c>attackhelicopter</c>) while the cell/anim cascade uses the underscored one.</summary>
     public static string? FindRig(IReadOnlyDictionary<string, TbBone> rigs, string entityName)
     {
+        var boundary = FindRigBoundary(rigs, entityName);
+        if (boundary is not null) return boundary;
+        string? best = BarePrefixRig(rigs, entityName);
+        return best;
+    }
+
+    /// <summary>The first, word-boundary half of <see cref="FindRig"/>: an exact rig name, or the rig
+    /// followed by <c>_</c>. Split out so a probe can tell which half answered — the greedy fallback
+    /// below is what hijacked Tasty Blue's <c>fishbowl_side</c> onto the <c>fish</c> rig.</summary>
+    public static string? FindRigBoundary(IReadOnlyDictionary<string, TbBone> rigs, string entityName)
+    {
         if (string.IsNullOrEmpty(entityName)) return null;
         string low = entityName.ToLowerInvariant();
         string? best = null;
@@ -180,14 +191,21 @@ public static class TbSkeletons
             if (low != n && !low.StartsWith(n + "_", StringComparison.Ordinal)) continue;
             if (best is null || n.Length > best.Length) best = name;
         }
-        if (best is not null) return best;
+        return best;
+    }
 
-        // Final Bite concatenates the theme straight onto the rig with no separator, so its level types
-        // are <catfish><atlantis1>_<n> (catfishatlantis1_7) where the underscore boundary above never
-        // fires. Fall back to the longest rig that is a bare prefix of the name; only reached after the
-        // boundary scan misses, so Tasty Blue / Forever (whose names carry the underscore) are untouched,
-        // and the longest match keeps a short rig from stealing a longer creature that merely begins
-        // with the same letters.
+    /// <summary>The second, greedy half of <see cref="FindRig"/>: the longest rig that is a bare prefix of
+    /// the name. It exists because Final Bite concatenates the theme straight onto the rig with no
+    /// separator, so its level types are <catfish><atlantis1>_<n> (<c>catfishatlantis1_7</c>) where the
+    /// underscore boundary never fires. The longest match keeps a short rig from stealing a longer
+    /// creature that merely begins with the same letters, but nothing here stops it stealing a name that
+    /// has art of its own (<c>fishbowl_side</c> is not the <c>fish</c> rig), so callers must check that
+    /// first. Public for the same reason — a probe needs to tell which half answered.</summary>
+    public static string? BarePrefixRig(IReadOnlyDictionary<string, TbBone> rigs, string entityName)
+    {
+        if (string.IsNullOrEmpty(entityName)) return null;
+        string low = entityName.ToLowerInvariant();
+        string? best = null;
         foreach (var name in rigs.Keys)
         {
             string n = name.ToLowerInvariant();

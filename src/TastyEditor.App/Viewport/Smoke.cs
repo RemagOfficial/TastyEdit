@@ -3470,6 +3470,10 @@ public static partial class Smoke
             ("tp2fields", Tp2FieldsCheck),
             ("tp1check", Tp1Check),
             ("mods", ModsCheck),
+            // R8: the sprite-identity invariant — no object may be drawn as another object's rig just
+            // because their names share a prefix. It renders through the real SpriteSource, so it catches
+            // the 1.0.0 fishbowl class of bug rather than re-reading the resolver's own flags.
+            ("rigfall", RigFallProbe),
         };
 
         var real = Console.Out;

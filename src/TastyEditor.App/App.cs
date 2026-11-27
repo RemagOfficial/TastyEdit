@@ -101,6 +101,14 @@ public sealed class App : Application
             Viewport.Smoke.TbSkelDump();
             return;
         }
+        // Dev-only: audit the greedy rig-name fallback — every entity/deco name the installed levels use,
+        // which pass of FindRig answered it, and whether a name that owns its art was stolen onto another
+        // object's rig (writes _rigfall.txt).
+        if (args.Length >= 1 && args[0] == "rigfall")
+        {
+            Viewport.Smoke.RigFallProbe();
+            return;
+        }
         // Dev-only: Forever / Final Bite engine-art port coverage — EngineArt/rig-name counts and per-tier
         // entity/deco resolution over stock levels (writes _f45_probe.txt).
         if (args.Length >= 1 && args[0] == "f45probe")

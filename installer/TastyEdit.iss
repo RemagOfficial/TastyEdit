@@ -1,11 +1,11 @@
-; TastyEdit installer for 1.0.0.
+; TastyEdit installer for 1.0.1.
 ;
 ; Compile it from the repository root, with the version passed in — the same number drives the
 ; artifact name, the publish folder it reads and the Start-Menu entry, so it is never guessed:
 ;
 ;   dotnet publish src/TastyEditor.App -c Release -r win-x64 --self-contained true -t:Rebuild `
-;       -o publish/TastyEdit-1.0.0
-;   & "C:\Program Files\Inno Setup 7\ISCC.exe" "/DMyAppVersion=1.0.0" installer\TastyEdit.iss
+;       -o publish/TastyEdit-1.0.1
+;   & "C:\Program Files\Inno Setup 7\ISCC.exe" "/DMyAppVersion=1.0.1" installer\TastyEdit.iss
 ;
 ; It packages the publish folder and writes nothing of its own into it.
 

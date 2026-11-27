@@ -68,6 +68,8 @@ dotnet run --project src/TastyEditor.App --no-build -- <gate>
 | `undo` | each edit and drag is one undo step, and steps back to the loaded bytes |
 | `refill` `fields` `tp2fields` `tp2reassign` `tailedit` | water, per-family field, sprite reassignment and behaviour-tail edits |
 | `sprites` `smoke` | the asset bridge and a general load/edit sweep |
+| `tbskel` `f45probe` | the skeleton tables parse, and what art each shipped name resolves to |
+| `rigfall` | no object is drawn as some other object's rig: for every name in the installed levels it renders the sprite the viewport would paint and compares it against the rig composite the name's prefix points at, so `fishbowl_side` drawing the `fish` rig fails the run |
 
 Every gate ends in a `GREEN` or `RED` line and writes a `_flips.txt`-style log in the working
 folder (ignored by git). Add a gate alongside any new write primitive — that is the bar for merging.

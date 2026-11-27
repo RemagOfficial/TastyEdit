@@ -55,23 +55,28 @@ public static partial class Smoke
                 var engineUsed = new List<string>();
                 foreach (var (name, recs) in names)
                 {
-                    bool hasRig = res.TryResolveRig(name, out var plan);
-                    bool rigFirst = hasRig && plan!.Parts.Count > 1;
+                    // Mirrors SpriteSource.TryBuildNamed: a rig leads only when the name spells it, so a
+                    // rig reached by the greedy bare prefix waits until the cells have had their turn.
+                    bool hasRig = res.TryResolveRig(name, out var plan, out bool rigIsGuess);
+                    bool rigFirst = hasRig && plan!.Parts.Count > 1 && !rigIsGuess;
                     string engineArt = string.Empty;
                     bool hasEngine = !rigFirst
                         && res.TryGetEngineArt(name, out engineArt) && engineArt != name
                         && (res.TryResolveRig(engineArt, out _) || res.TryResolveDirectCell(engineArt, 0, out _)
                             || res.TryResolveFallbackCell(engineArt, 0, out _));
                     bool hasDirect = !rigFirst && !hasEngine && res.TryResolveDirectCell(name, 0, out _);
-                    bool hasFallback = !hasDirect && !rigFirst && !hasEngine && res.TryResolveFallbackCell(name, 0, out _);
+                    bool hasRigLate = !rigFirst && !hasEngine && !hasDirect && hasRig;
+                    bool hasFallback = !rigFirst && !hasEngine && !hasDirect && !hasRigLate
+                        && res.TryResolveFallbackCell(name, 0, out _);
                     // the picture the viewport would actually paint is the ground truth
                     bool built = ss.TryGet(name, 0, white, out _, out _, out _, out _, out _, out _);
                     if (rigFirst) { rig++; recsRig += recs; }
                     else if (hasEngine) { engine++; recsEngine += recs; if (engineUsed.Count < 15) engineUsed.Add($"{name}->{engineArt}"); }
                     else if (hasDirect) { direct++; recsDirect += recs; }
+                    else if (hasRigLate) { rig++; recsRig += recs; }
                     else if (hasFallback) { stem++; recsStem += recs; }
                     else { none++; recsNone += recs; if (misses.Count < 15) misses.Add(name); }
-                    if (!built && (rigFirst || hasEngine || hasDirect || hasFallback))
+                    if (!built && (rigFirst || hasEngine || hasDirect || hasRigLate || hasFallback))
                         Emit($"  BUILD FAIL {name} (rig={rigFirst} engine={hasEngine} direct={hasDirect} stem={hasFallback})");
                 }
                 int totalRecs = names.Values.Sum();

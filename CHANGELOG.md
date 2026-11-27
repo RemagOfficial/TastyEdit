@@ -2,6 +2,31 @@
 
 All notable changes to TastyEdit are documented here. The newest release is at the top.
 
+## 1.0.1 — 27 November 2026
+
+A display fix, found the moment somebody opened `sink1b`. Nothing about saving changed.
+
+### Fixed in this version
+
+- **Objects drawn as the wrong picture.** In Tasty Blue's sink levels the fishbowl and the bag of fish
+  food were being drawn as fish. The editor worked out which character a name belongs to by looking at
+  what it starts with, and `fishbowl_side` starts with `fish` — so it assembled the fish out of its
+  skeleton parts and painted that over the bowl, at the fish's much larger size. The same thing was
+  happening to the islands in Tasty Blue and Forever, and in Forever to the beer bottle, the beehive and
+  the termite mound, each of which was drawn as the animal its name merely begins with.
+
+  A character's parts are now only used when the level actually names that character. If an object has a
+  picture of its own, its own picture wins, and the guess is kept back as the last resort it always was —
+  which is still what the later games' run-together names such as `catfishatlantis1_7` need, so those
+  keep drawing in one piece.
+- **The view fits better after it.** Because those wrong characters were far bigger than the objects they
+  covered, opening a level like `sink1b` and pressing fit framed the level around art that isn't there.
+
+Everything else in 1.0.0 is unchanged: same formats, same gates, one more check added so this class of
+mix-up can't come back unnoticed.
+
+---
+
 ## 1.0.0 — 27 November 2026
 
 The first proper release. One more game, a way to share what you make, and an installer — on top of
